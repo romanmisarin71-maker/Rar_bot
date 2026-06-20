@@ -54,14 +54,22 @@ async def handle_message(update: Update, context):
             return
 
         try:
+            # Получаем количество участников чата
+            members_count = await context.bot.get_chat_members_count(update.effective_chat.id)
             members = []
-            async for member in context.bot.get_chat_members(update.effective_chat.id):
-                if member.user.id == context.bot.id:
-                    continue
-                if member.user.username:
-                    members.append(f"@{member.user.username}")
-                else:
-                    members.append(member.user.first_name or "Юзер")
+
+            # Проходим по всем участникам (по одному)
+            for i in range(1, members_count + 1):
+                try:
+                    member = await context.bot.get_chat_member(update.effective_chat.id, i)
+                    if member.user.id == context.bot.id:
+                        continue
+                    if member.user.username:
+                        members.append(f"@{member.user.username}")
+                    else:
+                        members.append(member.user.first_name or "Юзер")
+                except:
+                    continue  # если не удалось получить участника (бот, удалённый аккаунт и т.д.)
 
             if not members:
                 await update.message.reply_text("Почему-то я никого не нашла")
