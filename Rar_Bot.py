@@ -48,31 +48,33 @@ async def handle_message(update: Update, context):
     
 
     elif clean == "калл":
-        chat_member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
-        if chat_member.status not in ["administrator","creator"]:
-            await update.message.reply_text("Прости, но калл доступен только админам, ты можешь попросить их созвать всех")
+    chat_member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
+    if chat_member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("Прости, но калл доступен только админам, ты можешь попросить их созвать всех")
+        return
+
+    try:
+        chat = await context.bot.get_chat(update.effective_chat.id)
+        members = []
+        async for member in chat.get_members():
+            if member.user.id == context.bot.id:
+                continue
+            if member.user.username:
+                members.append(f"@{member.user.username}")
+            else:
+                members.append(member.user.first_name or "Юзер")
+
+        if not members:
+            await update.message.reply_text("Почему-то я никого не нашла")
             return
 
-        try:
-            members = []
-            async for member in context.bot.get_chat_members(update.effective_chat.id):
-                if member.user.id == context.bot.id:
-                    continue
-                if member.user.username:
-                    members.append(f"@{member.user.username}")
-                else:
-                    members.append(member.user.first_name or "Юзер")
-            if not members:
-                await update.message.reply_text("Почему то я никого не нашла")
-                return
-            
-            chunk_size = 10
-            for i in range(0, len(members), chunk_size):
-                chunk = members[i:i + chunk_size]
-                await update.message.reply_text("Минуточку внимания!!!\n" + "\n".join(chunk))
+        chunk_size = 10
+        for i in range(0, len(members), chunk_size):
+            chunk = members[i:i + chunk_size]
+            await update.message.reply_text("Минуточку внимания!!!\n" + "\n".join(chunk))
 
-        except Exception as e:
-            await update.message.reply_text(f"Ошибка при сборе участников: {e}")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при сборе участников: {e}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
