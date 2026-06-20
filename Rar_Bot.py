@@ -48,7 +48,7 @@ async def handle_message(update: Update, context):
     
 
     elif clean == "калл":
-        chat_member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
+        chat_member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
         if chat_member.status not in ["administrator","creator"]:
             await update.message.reply_text("Прости, но калл доступен только админам, ты можешь попросить их созвать всех")
             return
