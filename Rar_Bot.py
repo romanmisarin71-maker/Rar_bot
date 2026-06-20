@@ -1,4 +1,4 @@
-import random
+       import random
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 
@@ -54,11 +54,11 @@ async def handle_message(update: Update, context):
             return
 
         try:
-            # Получаем количество участников чата
-            members_count = await context.bot.get_chat_members_count(update.effective_chat.id)
+            # Получаем количество участников
+            members_count = await context.bot.get_chat_member_count(update.effective_chat.id)
             members = []
 
-            # Проходим по всем участникам (по одному)
+            # Перебираем всех участников по ID (начиная с 1 до members_count)
             for i in range(1, members_count + 1):
                 try:
                     member = await context.bot.get_chat_member(update.effective_chat.id, i)
@@ -69,7 +69,7 @@ async def handle_message(update: Update, context):
                     else:
                         members.append(member.user.first_name or "Юзер")
                 except:
-                    continue  # если не удалось получить участника (бот, удалённый аккаунт и т.д.)
+                    continue
 
             if not members:
                 await update.message.reply_text("Почему-то я никого не нашла")
@@ -90,4 +90,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main()             
