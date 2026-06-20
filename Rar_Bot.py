@@ -68,11 +68,11 @@ async def handle_message(update: Update, context):
             
             chunk_size = 10
             for i in range(0, len(members), chunk_size):
-                chunk = members[i:i + chank_size]
+                chunk = members[i:i + chunk_size]
                 await update.message.reply_text("Минуточку внимания!!!\n" + "\n".join(chunk))
 
         except Exception as e:
-            await update.message.reply_text("Ошибка при сборе участников: {e}")
+            await update.message.reply_text(f"Ошибка при сборе участников: {e}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
