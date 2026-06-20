@@ -54,9 +54,8 @@ async def handle_message(update: Update, context):
             return
 
         try:
-            chat = await context.bot.get_chat(update.effective_chat.id)
             members = []
-            async for member in chat.get_members():
+            async for member in context.bot.get_chat_members(update.effective_chat.id):
                 if member.user.id == context.bot.id:
                     continue
                 if member.user.username:
