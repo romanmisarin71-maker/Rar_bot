@@ -4,7 +4,7 @@ import re
 import asyncio
 import psycopg2
 from aiohttp import web
-from ytmusicapi import YTMusic  # Подключаем поиск YouTube Music
+from ytmusicapi import YTMusic
 from telegram import Update
 from telegram.constants import ChatMemberStatus
 from telegram.ext import (
@@ -18,7 +18,6 @@ from telegram.ext import (
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Инициализируем движок поиска YouTube Music
 ytm = YTMusic()
 
 def get_db_connection():
@@ -27,7 +26,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Таблица участников чата
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             chat_id NUMERIC,
@@ -37,13 +35,11 @@ def init_db():
             PRIMARY KEY (chat_id, user_id)
         )
     """)
-    # Таблица вечного приветствия
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS greeted (
             user_id NUMERIC PRIMARY KEY
         )
     """)
-    # Таблица: Музыка из твоего канала
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS channel_music (
             file_id TEXT PRIMARY KEY,
@@ -70,7 +66,7 @@ def save_user(chat_id: int, user_id: int, username: str, first_name: str):
     conn.commit()
     cursor.close()
     conn.close()
-# ФУНКЦИИ ДЛЯ РАБОТЫ С МУЗЫКОЙ
+
 def save_track_to_db(file_id: str, title: str):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -94,7 +90,6 @@ def search_track_in_db(query: str):
 
 answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_reply
     if not update.message: return
@@ -115,52 +110,60 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message and update.message.reply_to_message.audio:
         text_clean = update.message.text.lower().strip() if update.message.text else ""
         if text_clean in ["добавь", "добавить"]:
-            sender = await context.bot.get_chat_member(chat_id, user_id)
-            if sender.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            member_status = await context.bot.get_chat_member(chat_id, user_id)
+            if member_status.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                 audio = update.message.reply_to_message.audio
-                track_title = f"{audio.performer} - {audio.title}" if audio.performer and audio.title else (audio.file_name or "Неизвестный трек")
+                performer = audio.performer.strip() if audio.performer else ""
+                title = audio.title.strip() if audio.title else ""
+                if performer and title:
+                    track_title = f"{performer} - {title}"
+                else:
+                    track_title = audio.file_name or "Неизвестный трек"
+                
                 save_track_to_db(audio.file_id, track_title)
-                await update.message.reply_text(f"✅ Трек успешно добавлен в базу канала как: *{track_title}*", parse_mode="Markdown")
+                await update.message.reply_text(f"✅ Трек успешно добавлен в архив канала под именем: {track_title}")
                 return
-    # ОБРАБОТКА ОБЫЧНОГО ТЕКСТА И КОМАНД
+
+    # ОБРАБОТКА ТЕКСТА И КОМАНД ПОИСКА
     if update.message.text:
         text = update.message.text
         clean = text.lower().strip()
 
-        # ФУНКЦИЯ ОБХОДА БАЗЫ: Принудительный поиск в YouTube Music через Reply
+        # ФУНКЦИЯ ОБХОДА БАЗЫ: Принудительный поиск в YouTube Music через Reply (На русском)
         if clean in ["поищи в ютм", "поищи в youtube music"] and update.message.reply_to_message:
             reply_msg = update.message.reply_to_message
-            if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "🔍 Запрос:" in reply_msg.caption:
+            if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
                 try:
-                    orig_query = reply_msg.caption.split("🔍 Запрос:")[1].strip()
+                    orig_query = reply_msg.caption.split("Запрос:").strip()
                 except Exception:
                     orig_query = None
 
                 if orig_query:
-                    status_msg = await update.message.reply_text("⏳ Переключаюсь на глобальный поиск YouTube Music...")
+                    status_msg = await update.message.reply_text("⏳ Ищу этот трек напрямую в YouTube Music...")
                     try:
                         search_results = ytm.search(orig_query, filter="songs", limit=1)
                         if not search_results:
-                            await status_msg.edit_text("❌ В YouTube Music тоже ничего не нашлось.")
+                            await status_msg.edit_text("❌ На YouTube Music этот трек найти не удалось.")
                             return
                         
-                        track = search_results[0]
+                        track = search_results
                         video_id = track['videoId']
                         title = track['title']
                         artists = ", ".join([a['name'] for a in track['artists']])
-                        stream_url = f"https://youtube.com{video_id}"
+                        
+                        download_url = f"https://vexdh.com{video_id}"
                         
                         await status_msg.delete()
-                        await update.message.reply_text(
-                            f"🎵 *Глобальный поиск YouTube Music (Принудительно)*:\n"
-                            f"▶️ *{artists} — {title}*\n\n"
-                            f"[Слушать трек в плеере]({stream_url})",
-                            parse_mode="Markdown"
+                        await context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=download_url,
+                            title=title,
+                            performer=artists,
+                            caption=f"🎵 Глобальный поиск: {artists} — {title}"
                         )
                     except Exception as e:
-                        await status_msg.edit_text(f"⚠️ Ошибка при глобальном поиске: {e}")
+                        await status_msg.edit_text(f"⚠️ Ошибка при загрузке из YTM: {e}")
                     return
-
         if clean == "rar":
             if last_reply is not None:
                 available = [a for a in answers_rar if a != last_reply]
@@ -198,46 +201,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды: {e}")
             return
 
-        # ПОИСК МУЗЫКИ
-        elif clean.startswith("рар найди ") or clean.startswith("rar найди "):
-            query = clean.replace("рар найди ", "").replace("rar найди ", "").strip()
+        # ИСПРАВЛЕННЫЙ ПОИСК МУЗЫКИ: Имя на английском, команда на русском (Rar найди duvet)
+        elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
+            query = text[9:].strip()
             if not query:
-                await update.message.reply_text("Напиши название песни после команды, например: `рар найди по барам`")
+                await update.message.reply_text("Напиши название песни, например: Rar найди duvet")
                 return
             
-            status_msg = await update.message.reply_text("🔍 Ищу трек в нашей базе...")
+            status_msg = await update.message.reply_text("🔍 Ищу трек в нашем архиве...")
 
+            # ПРИОРИТЕТ 1: Поиск в базе твоего канала
             local_track = search_track_in_db(query)
             if local_track:
                 file_id, track_title = local_track
                 await status_msg.delete()
-                caption_text = f"✨ Найдено в нашем аудио-архиве: *{track_title}*\n\n_🔍 Запрос: {query}_"
-                await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text, parse_mode="Markdown")
+                caption_text = f"✨ Найдено в архиве канала: {track_title}\n\nЗапрос: {query}"
+                await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
+            # ПРИОРИТЕТ 2: Скачиваем настоящий mp3 файл из YouTube Music
             try:
-                await status_msg.edit_text("⏳ В нашем архиве нет. Запускаю поиск по YouTube Music...")
+                await status_msg.edit_text("⏳ В архиве нет. Скачиваю аудиофайл из YouTube Music...")
                 search_results = ytm.search(query, filter="songs", limit=1)
                 
                 if not search_results:
-                    await status_msg.edit_text("❌ К сожалению, ничего не нашлось ни в архиве, ни на YouTube Music.")
+                    await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
                     return
                 
-                track = search_results[0]
+                track = search_results
                 video_id = track['videoId']
                 title = track['title']
                 artists = ", ".join([a['name'] for a in track['artists']])
-                stream_url = f"https://youtube.com{video_id}"
+                
+                download_url = f"https://vexdh.com{video_id}"
                 
                 await status_msg.delete()
-                await update.message.reply_text(
-                    f"🎵 *Глобальный поиск YouTube Music*:\n"
-                    f"▶️ *{artists} — {title}*\n\n"
-                    f"[Слушать трек в плеере]({stream_url})",
-                    parse_mode="Markdown"
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=download_url,
+                    title=title,
+                    performer=artists,
+                    caption=f"🎵 Найдено в YouTube Music: {artists} — {title}"
                 )
             except Exception as e:
-                await status_msg.edit_text(f"⚠️ Ошибка при глобальном поиске: {e}")
+                await status_msg.edit_text(f"⚠️ Ошибка при загрузке аудиофайла: {e}")
 
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
