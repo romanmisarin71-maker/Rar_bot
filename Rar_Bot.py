@@ -89,7 +89,25 @@ def search_track_in_db(query: str):
     conn.close()
     return row
 
-answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"],
+def is_user_greeted(user_id: int) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM greeted WHERE user_id = %s", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row is not None
+
+def mark_user_as_greeted(user_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO greeted (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# ИСПРАВЛЕНО: Убрали лишнюю запятую в конце строки!
+answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_reply
@@ -107,11 +125,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ЛОГИКА КОМАНДЫ "ДОБАВЬ" ЧЕРЕЗ REPLY ДЛЯ ВСЕХ УЧАСТНИКОВ (Проверка на админа вырезана)
+    # ЛОГИКА КОМАНДЫ "ДОБАВЬ" ДЛЯ ВСЕХ
     if update.message.text:
         incoming_text = update.message.text.lower().strip()
         if incoming_text in ["добавь", "добавить"]:
-            # Проверяем, что это ответ на сообщение и в оригинале есть аудиофайл
             if update.message.reply_to_message and update.message.reply_to_message.audio:
                 target_audio = update.message.reply_to_message.audio
                 performer = target_audio.performer.strip() if target_audio.performer else ""
@@ -136,12 +153,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         clean = text.lower().strip()
 
-        # Функция принудительного обхода базы через Reply (поищи в ютм)
         if clean in ["поищи в ютм", "поищи в youtube music"] and update.message.reply_to_message:
             reply_msg = update.message.reply_to_message
             if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
                 try:
-                    orig_query = reply_msg.caption.split("Запрос:").strip()
+                    orig_query = reply_msg.caption.split("Запрос:")[1].strip()
                 except Exception:
                     orig_query = None
 
@@ -149,16 +165,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     status_msg = await update.message.reply_text("⏳ Подключаюсь к YouTube Music...")
                     try:
                         search_results = ytm.search(orig_query, filter="songs", limit=1)
-                        if not search_results:
+                        if not search_results or len(search_results) == 0:
                             await status_msg.edit_text("❌ В глобальном поиске ничего не нашлось.")
                             return
                         
-                        track = search_results
+                        track = search_results[0]
                         video_id = track['videoId']
                         title = track['title']
                         artists = ", ".join([a['name'] for a in track['artists']])
                         
-                        # Делаем запрос к открытому и стабильному Cobalt API инстансу
                         download_url = "https://wuk.sh"
                         payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
                         headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -221,7 +236,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды: {e}")
             return
 
-        # ПОИСК МУЗЫКИ: Обращение на английском, команда на русском (Rar найди duvet)
+        # ПОИСК МУЗЫКИ (Rar найди duvet)
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
             query = text[9:].strip()
             if not query:
@@ -239,21 +254,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
-            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music + Конвертер в MP3
+            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music + Конвертер Cobalt
             try:
                 await status_msg.edit_text("⏳ В архиве нет. Загружаю аудиофайл из YouTube Music...")
                 search_results = ytm.search(query, filter="songs", limit=1)
                 
-                if not search_results:
+                if not search_results or len(search_results) == 0:
                     await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
                     return
                 
-                track = search_results
+                # Исправлено: берем первый элемент списка по индексу [0]
+                track = search_results[0]
                 video_id = track['videoId']
                 title = track['title']
                 artists = ", ".join([a['name'] for a in track['artists']])
                 
-                # Конвертер в прямую .mp3 ссылку (Wuk инстанс Cobalt)
                 download_url = "https://wuk.sh"
                 payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
                 headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -269,7 +284,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 await status_msg.delete()
-                # Отправляем настоящий .mp3 файл в плеер чата
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=audio_stream,
@@ -307,23 +321,6 @@ def get_chat_members(chat_id: int):
     conn.close()
     return rows
 
-def is_user_greeted(user_id: int) -> bool:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM greeted WHERE user_id = %s", (user_id,))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row is not None
-
-def mark_user_as_greeted(user_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO greeted (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
 async def handle_http(request):
     return web.Response(text="Бот Rar активен!")
 
@@ -348,8 +345,6 @@ def main():
     
     app = Application.builder().token(TOKEN).post_init(on_startup).build()
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
-    
-    # Слушаем все сообщения
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     
     print("Запуск бота...")
