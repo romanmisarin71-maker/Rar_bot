@@ -82,7 +82,9 @@ def save_track_to_db(file_id: str, title: str):
 def search_track_in_db(query: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT 1", (f"%{query}%",))
+    # Очищаем поисковый запрос от пробелов и приводим к нижнему регистру
+    clean_query = f"%{query.strip().lower()}%"
+    cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT 1", (clean_query,))
     row = cursor.fetchone()
     cursor.close()
     conn.close()
@@ -99,14 +101,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     first_name = update.effective_user.first_name or "друг"
 
+    # Сохраняем пользователя при любой активности в чате
     save_user(chat_id, user_id, username, first_name)
 
+    # Логика вечного приветствия
     if not is_user_greeted(user_id):
         hi_text = f"Здравствуйте, {first_name}! Я Rar - ваш универсальный помощник, приятно познакомиться!"
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ИСПРАВЛЕННАЯ ЛОГИКА КОМАНДЫ "ДОБАВЬ"
+    # ИСПРАВЛЕННАЯ ЛОГИКА КОМАНДЫ "ДОБАВЬ" (Срабатывает на 100% при ALL фильтрах)
     if update.message.reply_to_message and update.message.reply_to_message.audio:
         text_clean = update.message.text.lower().strip() if update.message.text else ""
         if text_clean in ["добавь", "добавить"]:
@@ -115,14 +119,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 audio = update.message.reply_to_message.audio
                 performer = audio.performer.strip() if audio.performer else ""
                 title = audio.title.strip() if audio.title else ""
+                
                 if performer and title:
                     track_title = f"{performer} - {title}"
                 else:
                     track_title = audio.file_name or "Неизвестный трек"
                 
+                # Записываем в базу данных PostgreSQL
                 save_track_to_db(audio.file_id, track_title)
-                # Обычный текст ответа, защищенный от падения из-за спецсимволов
-                await update.message.reply_text(f"✅ Трек успешно добавлен в архив канала: {track_title}")
+                
+                # Посылаем трек обратно как железобетонное доказательство записи
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=audio.file_id,
+                    caption=f"✅ Rar успешно занесла этот трек в свой постоянный аудио-архив!\n\nИмя в базе: {track_title}"
+                )
                 return
 
     # ОБРАБОТКА ТЕКСТА И КОМАНД ПОИСКА
@@ -130,7 +141,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         clean = text.lower().strip()
 
-        # ФУНКЦИЯ ОБХОДА БАЗЫ: Принудительный поиск в YouTube Music через Reply (На русском)
+        # Функция принудительного обхода базы через Reply (поищи в ютм)
         if clean in ["поищи в ютм", "поищи в youtube music"] and update.message.reply_to_message:
             reply_msg = update.message.reply_to_message
             if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
@@ -147,20 +158,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await status_msg.edit_text("❌ На YouTube Music этот трек найти не удалось.")
                             return
                         
-                        # Исправлено: берем первый элемент списка [0]
                         track = search_results[0]
                         video_id = track['videoId']
                         title = track['title']
                         artists = ", ".join([a['name'] for a in track['artists']])
                         
-                        # Прямой API-конвертер в MP3 файл
-                        download_url = f"https://vexdh.com{video_id}"
+                        # API-конвертер Cobalt
+                        download_url = f"https://cobalt.tools"
+                        payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
                         
+                        async with asyncio.Lock():
+                            import aiohttp
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(download_url, json=payload, headers={"Accept": "application/json"}) as resp:
+                                    res_json = await resp.json()
+                                    audio_stream = res_json.get("url")
+
+                        if not audio_stream:
+                            await status_msg.edit_text("❌ Не удалось сгенерировать поток для скачивания.")
+                            return
+
                         await status_msg.delete()
-                        # Отправляем аудиофайл напрямую в плеер
                         await context.bot.send_audio(
                             chat_id=chat_id,
-                            audio=download_url,
+                            audio=audio_stream,
                             title=title,
                             performer=artists,
                             caption=f"🎵 Глобальный поиск: {artists} — {title}"
@@ -205,7 +226,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды: {e}")
             return
 
-        # ИСПРАВЛЕННЫЙ ПОИСК МУЗЫКИ: Имя Rar на английском, команда на русском
+        # ПОИСК МУЗЫКИ (Rar найди duvet)
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
             query = text[9:].strip()
             if not query:
@@ -214,16 +235,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             status_msg = await update.message.reply_text("🔍 Ищу трек в нашем архиве...")
 
-            # ПРИОРИТЕТ 1: Поиск по базе твоего музыкального канала
+            # ПРИОРИТЕТ 1: Поиск в вашей базе данных канала
             local_track = search_track_in_db(query)
             if local_track:
                 file_id, track_title = local_track
                 await status_msg.delete()
+                # Передаем метку запроса без Markdown-символов, чтобы обход сработал чисто
                 caption_text = f"✨ Найдено в архиве канала: {track_title}\n\nЗапрос: {query}"
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
-            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music со скачиванием MP3
+            # ПРИОРИТЕТ 2: Скачиваем настоящий mp3 файл из YouTube Music через Cobalt API
             try:
                 await status_msg.edit_text("⏳ В архиве нет. Скачиваю аудиофайл из YouTube Music...")
                 search_results = ytm.search(query, filter="songs", limit=1)
@@ -232,20 +254,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
                     return
                 
-                # Исправлено: берем первый элемент списка [0]
                 track = search_results[0]
                 video_id = track['videoId']
                 title = track['title']
                 artists = ", ".join([a['name'] for a in track['artists']])
                 
-                # Запрос к конвертеру, отдающему прямой аудиофайл
-                download_url = f"https://vexdh.com{video_id}"
+                # Запрос к Cobalt API для получения прямого MP3 файла
+                download_url = f"https://cobalt.tools"
+                payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
                 
+                async with asyncio.Lock():
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(download_url, json=payload, headers={"Accept": "application/json"}) as resp:
+                            res_json = await resp.json()
+                            audio_stream = res_json.get("url")
+
+                if not audio_stream:
+                    await status_msg.edit_text("❌ Не удалось сгенерировать аудиофайл для этого трека.")
+                    return
+
                 await status_msg.delete()
                 # Отправляем полноценный .mp3 файл в плеер чата
                 await context.bot.send_audio(
                     chat_id=chat_id,
-                    audio=download_url,
+                    audio=audio_stream,
                     title=title,
                     performer=artists,
                     caption=f"🎵 Найдено в YouTube Music: {artists} — {title}"
@@ -322,7 +355,9 @@ def main():
     app = Application.builder().token(TOKEN).post_init(on_startup).build()
     
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # ИЗМЕНЕНО: Заменили TEXT фильтр на ALL, чтобы бот видел сообщения, содержащие аудио
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     
     print("Запуск бота...")
     app.run_polling()
