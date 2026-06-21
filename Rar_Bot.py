@@ -133,7 +133,6 @@ def get_chat_members(chat_id: int):
     return rows
 answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
-# Словарь теперь хранит строго последние 5 ID файлов для каждого чата
 recent_tracks_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -201,7 +200,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if chat_id not in recent_tracks_history:
                 recent_tracks_history[chat_id] = []
                 
-            # ИСПРАВЛЕНО: Правильно сопоставляем file_id (элемент t[0]), чтобы треки не повторялись
+            # Проверяем, чтобы file_id (первый элемент кортежа t[0]) не был в истории чата
             available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
             if not available_tracks:
                 recent_tracks_history[chat_id] = []
@@ -240,13 +239,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 members_tags = []
                 for row in saved_members:
                     m_id, m_username, m_first_name = row
-                    m_id = int(m_id)
-                    if m_id == context.bot.id: continue
+                    if int(m_id) == int(context.bot.id): continue
                         
                     if m_username:
                         members_tags.append(f"@{escape_markdown(m_username)}")
                     else:
-                        members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id})")
+                        members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
                 chunk_size = 5
                 for i in range(0, len(members_tags), chunk_size):
@@ -256,7 +254,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # НОВАЯ УМНАЯ КОМАНДА ДЛЯ ПРОВЕРКИ ВЫШЕДШИХ УЧАСТНИКОВ
+        # ИСПРАВЛЕННАЯ СУПЕР-ТОЧНАЯ ПРОВЕРКА УЧАСТНИКОВ
         elif clean == "rar.check":
             status_msg = await update.message.reply_text("🔎 Проверяю список участников чата, секунду...")
             try:
@@ -266,23 +264,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for row in saved_members:
                     m_id, _, _ = row
                     m_id = int(m_id)
-                    if m_id == context.bot.id: continue
+                    
+                    if m_id == int(context.bot.id): 
+                        continue
                     
                     try:
-                        # Запрашиваем актуальный статус у Telegram
                         current_status = await context.bot.get_chat_member(chat_id, m_id)
+                        
+                        if current_status.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                            continue
+                            
                         if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
                             remove_user(chat_id, m_id)
                             left_count += 1
                     except Exception:
-                        # Если выбило ошибку (пользователь забанен/не найден), тоже удаляем
                         remove_user(chat_id, m_id)
                         left_count += 1
                 
                 await status_msg.delete()
                 if left_count > 0:
                     await update.message.reply_text(
-                        f"Сколько человек вышло: {left_count}\nБуду скучать по ним\!"
+                        f"Сколько человек вышло: {left_count}\nБуду скучать по ним!"
                     )
                 else:
                     await update.message.reply_text("Еще никто не успел выйти, не переживай")
