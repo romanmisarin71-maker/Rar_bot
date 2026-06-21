@@ -23,7 +23,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Используем NUMERIC для ID чатов и пользователей, чтобы избежать проблем со слишком длинными числами в супергруппах
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             chat_id NUMERIC,
@@ -166,8 +165,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chunk_size = 5
             for i in range(0, len(members_tags), chunk_size):
                 chunk = members_tags[i:i + chunk_size]
-                # Корректно экранированная строка заголовка для MarkdownV2
-                await update.message.reply_text("Минуточку внимания\!\!\!\n" + "\n".join(chunk), parse_mode="MarkdownV2")
+                # Добавлена литера r перед строкой
+                await update.message.reply_text(r"Минуточку внимания\!\!\!\n" + "\n".join(chunk), parse_mode="MarkdownV2")
         except Exception as e:
             await update.message.reply_text(f"Ошибка команды: {e}")
 
@@ -203,4 +202,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-                             
+    
