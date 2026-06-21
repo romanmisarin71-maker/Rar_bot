@@ -133,6 +133,7 @@ def get_chat_members(chat_id: int):
     return rows
 answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
+# Словарь теперь хранит строго последние 5 ID файлов для каждого чата
 recent_tracks_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,7 +145,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     first_name = update.effective_user.first_name or "друг"
 
-    # Запоминаем пользователя при любой текстовой активности
     save_user(chat_id, user_id, username, first_name)
 
     if not is_user_greeted(user_id):
@@ -158,7 +158,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.message.caption:
         incoming_text = update.message.caption.lower().strip()
 
-    # ЛОГИКА КОМАНДЫ "ДОБАВЬ"
     if incoming_text in ["добавь", "добавить"]:
         target_audio = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
@@ -202,7 +201,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if chat_id not in recent_tracks_history:
                 recent_tracks_history[chat_id] = []
                 
-            available_tracks = [t for t in all_tracks if t not in recent_tracks_history[chat_id]]
+            # ИСПРАВЛЕНО: Правильно сопоставляем file_id (элемент t[0]), чтобы треки не повторялись
+            available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
             if not available_tracks:
                 recent_tracks_history[chat_id] = []
                 available_tracks = all_tracks
@@ -221,7 +221,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2"
             )
             return
-        # ИСПРАВЛЕННАЯ ОПТИМИЗИРОВАННАЯ КОМАНДА КАЛЛ
+        # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ (БЕЗ ЛИШНИХ ЗАПРОСОВ К API)
         elif clean == "калл":
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
@@ -238,34 +238,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 members_tags = []
-                
                 for row in saved_members:
                     m_id, m_username, m_first_name = row
                     m_id = int(m_id)
-                    
-                    if m_id == context.bot.id: 
-                        continue
-                    
-                    # Легкая и быстрая проверка: дергаем API только если у пользователя нет username
-                    # Если пользователя нет в чате, Telegram вернет ошибку, и мы удалим его из БД
-                    try:
-                        if not m_username:
-                            current_status = await context.bot.get_chat_member(chat_id, m_id)
-                            if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                                remove_user(chat_id, m_id)
-                                continue
-                    except Exception:
-                        remove_user(chat_id, m_id)
-                        continue
+                    if m_id == context.bot.id: continue
                         
                     if m_username:
                         members_tags.append(f"@{escape_markdown(m_username)}")
                     else:
                         members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id})")
-
-                if not members_tags:
-                    await update.message.reply_text("Все сохраненные пользователи покинули группу.")
-                    return
 
                 chunk_size = 5
                 for i in range(0, len(members_tags), chunk_size):
@@ -273,6 +254,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
             except Exception as e:
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
+            return
+
+        # НОВАЯ УМНАЯ КОМАНДА ДЛЯ ПРОВЕРКИ ВЫШЕДШИХ УЧАСТНИКОВ
+        elif clean == "rar.check":
+            status_msg = await update.message.reply_text("🔎 Проверяю список участников чата, секунду...")
+            try:
+                saved_members = get_chat_members(chat_id)
+                left_count = 0
+                
+                for row in saved_members:
+                    m_id, _, _ = row
+                    m_id = int(m_id)
+                    if m_id == context.bot.id: continue
+                    
+                    try:
+                        # Запрашиваем актуальный статус у Telegram
+                        current_status = await context.bot.get_chat_member(chat_id, m_id)
+                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                            remove_user(chat_id, m_id)
+                            left_count += 1
+                    except Exception:
+                        # Если выбило ошибку (пользователь забанен/не найден), тоже удаляем
+                        remove_user(chat_id, m_id)
+                        left_count += 1
+                
+                await status_msg.delete()
+                if left_count > 0:
+                    await update.message.reply_text(
+                        f"Сколько человек вышло: {left_count}\nБуду скучать по ним\!"
+                    )
+                else:
+                    await update.message.reply_text("Еще никто не успел выйти, не переживай")
+            except Exception as e:
+                await update.message.reply_text(f"Ошибка при проверке списка: {e}")
             return
 
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
@@ -345,4 +360,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
+    
