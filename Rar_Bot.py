@@ -23,10 +23,11 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Используем NUMERIC для ID чатов и пользователей, чтобы избежать проблем со слишком длинными числами в супергруппах
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            chat_id BIGINT,
-            user_id BIGINT,
+            chat_id NUMERIC,
+            user_id NUMERIC,
             username TEXT,
             first_name TEXT,
             PRIMARY KEY (chat_id, user_id)
@@ -34,7 +35,7 @@ def init_db():
     """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS greeted (
-            user_id BIGINT PRIMARY KEY
+            user_id NUMERIC PRIMARY KEY
         )
     """)
     conn.commit()
@@ -103,7 +104,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     new_status = result.new_chat_member.status
     if user.is_bot: return
 
-    if new_status == ChatMemberStatus.MEMBER:
+    if new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         user_name = user.first_name or "друг"
         save_user(chat_id, user.id, user.username, user_name)
         if not is_user_greeted(user.id):
@@ -122,6 +123,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     first_name = update.effective_user.first_name or "друг"
 
+    # Сохраняем в базу данных
     save_user(chat_id, user_id, username, first_name)
 
     if not is_user_greeted(user_id):
@@ -145,26 +147,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chat_member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
             await update.message.reply_text("Прости, но калл доступен только админам")
             return
+        
         try:
             saved_members = get_chat_members(chat_id)
             members_tags = []
+            
             for m_id, m_username, m_first_name in saved_members:
-                if m_id == context.bot.id: continue
-                try:
-                    current_member = await context.bot.get_chat_member(chat_id, m_id)
-                    if current_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                        remove_user(chat_id, m_id)
-                        continue
-                except Exception:
-                    remove_user(chat_id, m_id)
-                    continue
+                if int(m_id) == context.bot.id: continue
+                
+                # Убрали агрессивную очистку по get_chat_member, которая могла ломать базу при переходе в супергруппу
                 if m_username:
                     members_tags.append(f"@{escape_markdown(m_username)}")
                 else:
-                    members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id})")
+                    members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
             if not members_tags:
-                await update.message.reply_text("База данных пуста")
+                await update.message.reply_text("В этой группе я пока никого не запомнила. Напишите что-нибудь!")
                 return
 
             chunk_size = 5
@@ -172,9 +170,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chunk = members_tags[i:i + chunk_size]
                 await update.message.reply_text("Минуточку внимания!!!\n" + "\n".join(chunk), parse_mode="MarkdownV2")
         except Exception as e:
-            await update.message.reply_text(f"Ошибка: {e}")
+            await update.message.reply_text(f"Ошибка команды: {e}")
 
-# Фейковый веб-сервер для обхода ограничений Render
 async def handle_http(request):
     return web.Response(text="Бот Rar активен!")
 
@@ -188,9 +185,7 @@ async def start_webhook():
     await site.start()
     print(f"Фейковый веб-сервер успешно запущен на порту {port}")
 
-# Функция, которая безопасно выполнится сразу после старта асинхронного цикла бота
 async def on_startup(application: Application):
-    # Безопасно запускаем фоновый веб-сервер внутри рабочего цикла
     asyncio.create_task(start_webhook())
 
 def main():
@@ -199,7 +194,6 @@ def main():
         return
     init_db()
     
-    # Привязываем функцию on_startup через post_init сборщика
     app = Application.builder().token(TOKEN).post_init(on_startup).build()
     
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
