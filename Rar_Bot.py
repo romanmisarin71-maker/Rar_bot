@@ -114,6 +114,16 @@ def remove_user(chat_id: int, user_id: int):
     cursor.close()
     conn.close()
 
+# ВОЗВРАЩЕНА ПРОПАВШАЯ ФУНКЦИЯ ДЛЯ КОМАНДЫ КАЛЛ
+def get_chat_members(chat_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, first_name FROM users WHERE chat_id = %s", (chat_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
 answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,7 +175,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_msg = update.message.reply_to_message
             if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
                 try:
-                    orig_query = reply_msg.caption.split("Запрос:").strip()
+                    orig_query = reply_msg.caption.split("Запрос:")[1].strip()
                 except Exception:
                     orig_query = None
 
@@ -177,14 +187,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await status_msg.edit_text("❌ В глобальном поиске ничего не нашлось.")
                             return
                         
-                        track = search_results
+                        # ИСПРАВЛЕНО: Берем первый элемент списка [0]
+                        track = search_results[0]
                         video_id = track['videoId']
                         title = track['title']
                         artists = ", ".join([a['name'] for a in track['artists']])
                         
-                        # Переключено на новый стабильный Cobalt-инстанс
+                        # Обновлено под новые правила Cobalt API v7
                         download_url = "https://hyper.lol"
-                        payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
+                        payload = {"url": f"https://youtube.com{video_id}", "downloadMode": "audio"}
                         headers = {"Accept": "application/json", "Content-Type": "application/json"}
                         
                         import aiohttp
@@ -229,7 +240,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for m_id, m_username, m_first_name in saved_members:
                     if int(m_id) == context.bot.id: continue
                     
-                    # Возвращена и оптимизирована проверка на "мертвые души"
                     try:
                         current_status = await context.bot.get_chat_member(chat_id, int(m_id))
                         if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
@@ -274,7 +284,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
-            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music + Новый стабильный инстанс Cobalt
+            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music + Обновленный Cobalt API v7
             try:
                 await status_msg.edit_text("⏳ В архиве нет. Загружаю аудиофайл из YouTube Music...")
                 search_results = ytm.search(query, filter="songs", limit=1)
@@ -283,13 +293,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
                     return
                 
-                track = search_results
+                # ИСПРАВЛЕНО: Берем первый элемент списка [0]
+                track = search_results[0]
                 video_id = track['videoId']
                 title = track['title']
                 artists = ", ".join([a['name'] for a in track['artists']])
                 
+                # Запрос к Cobalt API v7
                 download_url = "https://hyper.lol"
-                payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
+                payload = {"url": f"https://youtube.com{video_id}", "downloadMode": "audio"}
                 headers = {"Accept": "application/json", "Content-Type": "application/json"}
                 
                 import aiohttp
@@ -330,15 +342,6 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             mark_user_as_greeted(user.id)
     elif new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         remove_user(chat_id, user.id)
-
-def get_chat_members(chat_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, first_name FROM users WHERE chat_id = %s", (chat_id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
 
 async def handle_http(request):
     return web.Response(text="Бот Rar активен!")
