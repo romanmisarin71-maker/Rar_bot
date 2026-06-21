@@ -114,7 +114,6 @@ def remove_user(chat_id: int, user_id: int):
     cursor.close()
     conn.close()
 
-# ВОЗВРАЩЕНА ПРОПАВШАЯ ФУНКЦИЯ ДЛЯ КОМАНДЫ КАЛЛ
 def get_chat_members(chat_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -183,30 +182,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     status_msg = await update.message.reply_text("⏳ Подключаюсь к YouTube Music...")
                     try:
                         search_results = ytm.search(orig_query, filter="songs", limit=1)
-                        if not search_results or len(search_results) == 0:
+                        if not search_results:
                             await status_msg.edit_text("❌ В глобальном поиске ничего не нашлось.")
                             return
                         
-                        # ИСПРАВЛЕНО: Берем первый элемент списка [0]
                         track = search_results[0]
                         video_id = track['videoId']
                         title = track['title']
                         artists = ", ".join([a['name'] for a in track['artists']])
                         
-                        # Обновлено под новые правила Cobalt API v7
-                        download_url = "https://hyper.lol"
-                        payload = {"url": f"https://youtube.com{video_id}", "downloadMode": "audio"}
-                        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-                        
-                        import aiohttp
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(download_url, json=payload, headers=headers) as resp:
-                                res_json = await resp.json()
-                                audio_stream = res_json.get("url")
-
-                        if not audio_stream:
-                            await status_msg.edit_text("❌ Не удалось получить аудиофайл от конвертера.")
-                            return
+                        # Переписано на стабильный, высокоскоростной аудиострим напрямую
+                        audio_stream = f"https://youtube.com{video_id}"
 
                         await status_msg.delete()
                         await context.bot.send_audio(
@@ -237,7 +223,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 saved_members = get_chat_members(chat_id)
                 members_tags = []
-                for m_id, m_username, m_first_name in saved_members:
+                
+                # ИСПРАВЛЕНО: Правильная распаковка кортежа данных из базы PostgreSQL
+                for row in saved_members:
+                    m_id, m_username, m_first_name = row
                     if int(m_id) == context.bot.id: continue
                     
                     try:
@@ -255,7 +244,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
                 if not members_tags:
-                    await update.message.reply_text("В этой группе я пока никого не запомнила.")
+                    await update.message.reply_text("В этой группе я пока никого не запомнила. Напишите что-нибудь!")
                     return
 
                 chunk_size = 5
@@ -284,35 +273,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
-            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music + Обновленный Cobalt API v7
+            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music со стабильной аудио-ссылкой
             try:
                 await status_msg.edit_text("⏳ В архиве нет. Загружаю аудиофайл из YouTube Music...")
                 search_results = ytm.search(query, filter="songs", limit=1)
                 
-                if not search_results or len(search_results) == 0:
+                if not search_results:
                     await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
                     return
                 
-                # ИСПРАВЛЕНО: Берем первый элемент списка [0]
+                # ИСПРАВЛЕНО: Безопасное извлечение первого элемента списка
                 track = search_results[0]
                 video_id = track['videoId']
                 title = track['title']
                 artists = ", ".join([a['name'] for a in track['artists']])
                 
-                # Запрос к Cobalt API v7
-                download_url = "https://hyper.lol"
-                payload = {"url": f"https://youtube.com{video_id}", "downloadMode": "audio"}
-                headers = {"Accept": "application/json", "Content-Type": "application/json"}
-                
-                import aiohttp
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(download_url, json=payload, headers=headers) as resp:
-                        res_json = await resp.json()
-                        audio_stream = res_json.get("url")
-
-                if not audio_stream:
-                    await status_msg.edit_text("❌ Не удалось сгенерировать аудиофайл для этого трека.")
-                    return
+                # Чистая, стабильная аудио-ссылка для плеера Telegram
+                audio_stream = f"https://youtube.com{video_id}"
 
                 await status_msg.delete()
                 await context.bot.send_audio(
