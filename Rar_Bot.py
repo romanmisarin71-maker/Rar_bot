@@ -131,7 +131,7 @@ def get_chat_members(chat_id: int):
     cursor.close()
     conn.close()
     return rows
-answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
+    answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
 recent_tracks_history = {}
 
@@ -200,8 +200,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if chat_id not in recent_tracks_history:
                 recent_tracks_history[chat_id] = []
                 
-            # Проверяем, чтобы file_id (первый элемент кортежа t[0]) не был в истории чата
-            available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
+            available_tracks = [t for t in all_tracks if t not in recent_tracks_history[chat_id]]
             if not available_tracks:
                 recent_tracks_history[chat_id] = []
                 available_tracks = all_tracks
@@ -220,7 +219,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2"
             )
             return
-        # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ (БЕЗ ЛИШНИХ ЗАПРОСОВ К API)
+        # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ
         elif clean == "калл":
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
@@ -254,12 +253,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # ИСПРАВЛЕННАЯ СУПЕР-ТОЧНАЯ ПРОВЕРКА УЧАСТНИКОВ
+        # ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ПРОВЕРКА ЧЕРЕЗ БЕЛЫЙ СПИСОК СТАТУСОВ
         elif clean == "rar.check":
-            status_msg = await update.message.reply_text("🔎 Проверяю список участников чата, секунду...")
+            status_msg = await update.message.reply_text("🔎 Синхронизирую базу данных с участниками чата...")
             try:
                 saved_members = get_chat_members(chat_id)
                 left_count = 0
+                
+                # Список «валидных» статусов, при которых пользователь точно в группе
+                valid_statuses = [
+                    ChatMemberStatus.MEMBER,
+                    ChatMemberStatus.ADMINISTRATOR,
+                    ChatMemberStatus.OWNER,
+                    ChatMemberStatus.RESTRICTED
+                ]
                 
                 for row in saved_members:
                     m_id, _, _ = row
@@ -271,13 +278,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         current_status = await context.bot.get_chat_member(chat_id, m_id)
                         
-                        if current_status.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                            continue
-                            
-                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                        # Если статус пользователя не входит в белый список — он вышел / кикнут
+                        if current_status.status not in valid_statuses:
                             remove_user(chat_id, m_id)
                             left_count += 1
                     except Exception:
+                        # Если аккаунт удален совсем или бот заблокирован пользователем
                         remove_user(chat_id, m_id)
                         left_count += 1
                 
@@ -317,7 +323,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     new_status = result.new_chat_member.status
     if user.is_bot: return
 
-    if new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+    if new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
         user_name = user.first_name or "друг"
         save_user(chat_id, user.id, user.username, user_name)
         if not is_user_greeted(user.id):
