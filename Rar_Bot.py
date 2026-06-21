@@ -255,7 +255,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_audio(
                 chat_id=chat_id,
                 audio=file_id,
-                caption=f"Вот ваша песня\!\n\n*{escape_markdown(track_title)}*",
+                caption=fr"Вот ваша песня\!\n\n*{escape_markdown(track_title)}*",
                 parse_mode="MarkdownV2"
             )
             return
