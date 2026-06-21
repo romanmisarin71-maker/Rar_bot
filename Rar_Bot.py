@@ -43,6 +43,15 @@ def init_db():
             title TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS quotes (
+            id SERIAL PRIMARY KEY,
+            chat_id NUMERIC,
+            text TEXT,
+            author_name TEXT,
+            saved_by TEXT
+        )
+    """)
     conn.commit()
     cursor.close()
     conn.close()
@@ -98,6 +107,36 @@ def get_all_tracks_from_db():
     conn.close()
     return rows
 
+def save_quote(chat_id: int, text: str, author_name: str, saved_by: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO quotes (chat_id, text, author_name, saved_by)
+        VALUES (%s, %s, %s, %s) RETURNING id
+    """, (chat_id, text, author_name, saved_by))
+    quote_id = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return quote_id[0]
+
+def get_all_quotes(chat_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, text, author_name, saved_by FROM quotes WHERE chat_id = %s", (chat_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+def delete_quote_by_id(quote_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM quotes WHERE id = %s", (quote_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 def is_user_greeted(user_id: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -131,12 +170,13 @@ def get_chat_members(chat_id: int):
     cursor.close()
     conn.close()
     return rows
-    answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
+answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
 recent_tracks_history = {}
+recent_quotes_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_reply, recent_tracks_history
+    global last_reply, recent_tracks_history, recent_quotes_history
     if not update.message: return
     
     user_id = update.effective_user.id
@@ -219,7 +259,72 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2"
             )
             return
-        # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ
+
+        elif clean == "rar запомни":
+            if not update.message.reply_to_message or not update.message.reply_to_message.text:
+                await update.message.reply_text("⚠️ Эту команду нужно писать ответом (реплаем) на текстовое сообщение, которое ты хочешь запомнить!")
+                return
+            
+            quote_text = update.message.reply_to_message.text
+            author = update.message.reply_to_message.effective_user.first_name or "Кто-то"
+            saver = update.effective_user.first_name or "друг"
+            
+            q_id = save_quote(chat_id, quote_text, author, saver)
+            await update.message.reply_text(f"📝 Цитата успешно сохранена в мемориз под номером #{q_id}!")
+            return
+
+        elif clean in ["rar зацетируй", "rar зацитируй"]:
+            quotes = get_all_quotes(chat_id)
+            if not quotes:
+                await update.message.reply_text("В цитатнике этого чата пока пусто. Ответьте на чьё-то сообщение фразой 'Rar запомни'!")
+                return
+            
+            if chat_id not in recent_quotes_history:
+                recent_quotes_history[chat_id] = []
+                
+            available_quotes = [q for q in quotes if q[0] not in recent_quotes_history[chat_id]]
+            if not available_quotes:
+                recent_quotes_history[chat_id] = []
+                available_quotes = quotes
+                
+            selected = random.choice(available_quotes)
+            q_id, q_text, q_author, q_saved_by = selected
+            
+            recent_quotes_history[chat_id].append(q_id)
+            if len(recent_quotes_history[chat_id]) > 3:
+                recent_quotes_history[chat_id].pop(0)
+                
+            response = f"💬 *\"{escape_markdown(q_text)}\"*\n\n— _{escape_markdown(q_author)}_\n\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
+            await update.message.reply_text(response, parse_mode="MarkdownV2")
+            return
+        elif clean == "rar удалить цитату":
+            is_admin = False
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    is_admin = True
+            except Exception:
+                is_admin = False
+
+            if not is_admin:
+                await update.message.reply_text("❌ Прости, но удалять цитаты из мемориз могут только админы группы!")
+                return
+
+            if not update.message.reply_to_message:
+                await update.message.reply_text("⚠️ Ответь этой командой на сообщение бота с выданной цитатой, которую нужно стереть.")
+                return
+
+            reply_text = update.message.reply_to_message.text or ""
+            match = re.search(r"id:\s*(\d+)", reply_text)
+            
+            if match:
+                target_id = int(match.group(1))
+                delete_quote_by_id(target_id)
+                await update.message.reply_text(f"🗑️ Цитата #{target_id} навсегда удалена из базы данных чата.")
+            else:
+                await update.message.reply_text("⚠️ Не удалось определить ID цитаты. Убедись, что ты отвечаешь на оригинальное сообщение Rar с цитатой.")
+            return
+
         elif clean == "калл":
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
@@ -253,14 +358,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ПРОВЕРКА ЧЕРЕЗ БЕЛЫЙ СПИСОК СТАТУСОВ
         elif clean == "rar.check":
             status_msg = await update.message.reply_text("🔎 Синхронизирую базу данных с участниками чата...")
             try:
                 saved_members = get_chat_members(chat_id)
                 left_count = 0
-                
-                # Список «валидных» статусов, при которых пользователь точно в группе
                 valid_statuses = [
                     ChatMemberStatus.MEMBER,
                     ChatMemberStatus.ADMINISTRATOR,
@@ -271,19 +373,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for row in saved_members:
                     m_id, _, _ = row
                     m_id = int(m_id)
-                    
-                    if m_id == int(context.bot.id): 
-                        continue
+                    if m_id == int(context.bot.id): continue
                     
                     try:
                         current_status = await context.bot.get_chat_member(chat_id, m_id)
-                        
-                        # Если статус пользователя не входит в белый список — он вышел / кикнут
                         if current_status.status not in valid_statuses:
                             remove_user(chat_id, m_id)
                             left_count += 1
                     except Exception:
-                        # Если аккаунт удален совсем или бот заблокирован пользователем
                         remove_user(chat_id, m_id)
                         left_count += 1
                 
