@@ -186,7 +186,12 @@ async def start_webhook():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Фейковый веб-сервер запущен на порту {port}")
+    print(f"Фейковый веб-сервер успешно запущен на порту {port}")
+
+# Функция, которая безопасно выполнится сразу после старта асинхронного цикла бота
+async def on_startup(application: Application):
+    # Безопасно запускаем фоновый веб-сервер внутри рабочего цикла
+    asyncio.create_task(start_webhook())
 
 def main():
     if not TOKEN or not DATABASE_URL:
@@ -194,16 +199,13 @@ def main():
         return
     init_db()
     
-    # Исправленная универсальная инициализация без проблемного метода
-    app = Application.builder().token(TOKEN).build()
+    # Привязываем функцию on_startup через post_init сборщика
+    app = Application.builder().token(TOKEN).post_init(on_startup).build()
     
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_webhook())
-    
-    print("Бот запущен на бесплатном тарифе.")
+    print("Запуск бота...")
     app.run_polling()
 
 if __name__ == "__main__":
