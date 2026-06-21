@@ -123,7 +123,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     first_name = update.effective_user.first_name or "друг"
 
-    # Сохраняем в базу данных
     save_user(chat_id, user_id, username, first_name)
 
     if not is_user_greeted(user_id):
@@ -155,7 +154,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for m_id, m_username, m_first_name in saved_members:
                 if int(m_id) == context.bot.id: continue
                 
-                # Убрали агрессивную очистку по get_chat_member, которая могла ломать базу при переходе в супергруппу
                 if m_username:
                     members_tags.append(f"@{escape_markdown(m_username)}")
                 else:
@@ -168,7 +166,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chunk_size = 5
             for i in range(0, len(members_tags), chunk_size):
                 chunk = members_tags[i:i + chunk_size]
-                await update.message.reply_text("Минуточку внимания!!!\n" + "\n".join(chunk), parse_mode="MarkdownV2")
+                # Корректно экранированная строка заголовка для MarkdownV2
+                await update.message.reply_text("Минуточку внимания\!\!\!\n" + "\n".join(chunk), parse_mode="MarkdownV2")
         except Exception as e:
             await update.message.reply_text(f"Ошибка команды: {e}")
 
@@ -204,3 +203,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                             
