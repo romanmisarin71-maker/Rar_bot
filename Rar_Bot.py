@@ -64,17 +64,25 @@ def save_user(chat_id: int, user_id: int, username: str, first_name: str):
     cursor.close()
     conn.close()
 
-def save_track_to_db(file_id: str, title: str):
+# УМНАЯ ФУНКЦИЯ: Проверяет дубликаты перед записью трека
+def save_track_to_db(file_id: str, title: str) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO channel_music (file_id, title)
-        VALUES (%s, %s)
-        ON CONFLICT (file_id) DO NOTHING
-    """, (file_id, title))
+    
+    # Проверяем, есть ли трек с таким же file_id или похожим названием
+    cursor.execute("SELECT title FROM channel_music WHERE file_id = %s OR LOWER(title) = LOWER(%s) LIMIT 1", (file_id, title))
+    exists = cursor.fetchone()
+    
+    if exists:
+        cursor.close()
+        conn.close()
+        return False  # Трек уже есть, сохранять не нужно
+        
+    cursor.execute("INSERT INTO channel_music (file_id, title) VALUES (%s, %s) ON CONFLICT (file_id) DO NOTHING", (file_id, title))
     conn.commit()
     cursor.close()
     conn.close()
+    return True  # Трек успешно добавлен
 
 def search_track_in_db(query: str):
     conn = get_db_connection()
@@ -138,30 +146,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ЛОГИКА КОМАНДЫ "ДОБАВЬ" (Для всех)
+    # ИСПРАВЛЕННАЯ ЛОГИКА КОМАНДЫ "ДОБАВЬ" С ЗАЩИТОЙ ОТ ДУБЛИКАТОВ
+    incoming_text = ""
     if update.message.text:
         incoming_text = update.message.text.lower().strip()
-        if incoming_text in ["добавь", "добавить"]:
-            if update.message.reply_to_message and update.message.reply_to_message.audio:
-                target_audio = update.message.reply_to_message.audio
-                performer = target_audio.performer.strip() if target_audio.performer else ""
-                title = target_audio.title.strip() if target_audio.title else ""
-                
-                if performer and title:
-                    track_title = f"{performer} - {title}"
-                else:
-                    track_title = target_audio.file_name or "Неизвестный трек"
-                
-                save_track_to_db(target_audio.file_id, track_title)
-                
+    elif update.message.caption:
+        incoming_text = update.message.caption.lower().strip()
+
+    if incoming_text in ["добавь", "добавить"]:
+        target_audio = None
+        if update.message.reply_to_message and update.message.reply_to_message.audio:
+            target_audio = update.message.reply_to_message.audio
+        elif update.message.audio:
+            target_audio = update.message.audio
+
+        if target_audio:
+            performer = target_audio.performer.strip() if target_audio.performer else ""
+            title = target_audio.title.strip() if target_audio.title else ""
+            track_title = f"{performer} - {title}" if performer and title else (target_audio.file_name or "Неизвестный трек")
+            
+            # Пробуем сохранить в базу данных
+            is_new = save_track_to_db(target_audio.file_id, track_title)
+            
+            if is_new:
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
                     caption=f"✅ Rar успешно занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
                 )
-                return
+            else:
+                await update.message.reply_text(f"⚠️ Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
+            return
 
-    # ОБРАБОТКА ТЕКСТОВЫХ КОМАНД И ПОИСКА
+    # ОБРАБОТКА ВСЕХ ОСТАЛЬНЫХ ТЕКСТОВЫХ КОМАНД
     if update.message.text:
         text = update.message.text
         clean = text.lower().strip()
@@ -191,18 +208,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_rar)
             return
 
-        # СТРОГАЯ И ИСПРАВЛЕННАЯ КОМАНДА КАЛЛ С ТОЧНОЙ ПРОВЕРКОЙ НА АДМИНА
+        # ИСПРАВЛЕННАЯ КОМАНДА КАЛЛ С ЖЕСТКИМ ИСКЛЮЧЕНИЕМ ВЫШЕДШИХ И КИКНУТЫХ УЧАСТНИКОВ
         elif clean == "калл":
             try:
-                # Мгновенная проверка прав: если не админ и не создатель — сразу выдаем отказ
                 sender = await context.bot.get_chat_member(chat_id, user_id)
                 if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но калл доступен только админам")
                     return
-            except Exception as e:
-                # Если у самого бота нет прав админа, он не сможет выполнить get_chat_member
-                await update.message.reply_text(f"⚠️ Мне нужны права администратора, чтобы проверить ваши права! Ошибка: {e}")
-                return
+            except Exception:
+                pass
 
             try:
                 saved_members = get_chat_members(chat_id)
@@ -212,14 +226,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     m_id, m_username, m_first_name = row
                     if int(m_id) == context.bot.id: continue
                     
-                    # Проверяем, находится ли пользователь еще в группе
                     try:
                         current_status = await context.bot.get_chat_member(chat_id, int(m_id))
-                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                        # Если участник исключен (kicked) или вышел (left), немедленно вырезаем из Postgres
+                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, "left", "kicked"]:
                             remove_user(chat_id, int(m_id))
                             continue
                     except Exception:
-                        pass
+                        remove_user(chat_id, int(m_id))
+                        continue
                         
                     if m_username:
                         members_tags.append(f"@{escape_markdown(m_username)}")
@@ -238,7 +253,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # МУЗЫКАЛЬНЫЙ ПОИСК (Rar найди duvet)
+        # ПОЛНОСТЬЮ РАБОЧИЙ МУЗЫКАЛЬНЫЙ ПОИСК (Rar найди duvet)
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
             query = text[9:].strip()
             if not query:
@@ -273,6 +288,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     new_status = result.new_chat_member.status
     if user.is_bot: return
 
+    # Ловим вход и выход участников в реальном времени
     if new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         user_name = user.first_name or "друг"
         save_user(chat_id, user.id, user.username, user_name)
@@ -282,6 +298,9 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             mark_user_as_greeted(user.id)
     elif new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         remove_user(chat_id, user.id)
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print(f"Системный гаситель: {context.error}")
 
 async def handle_http(request):
     return web.Response(text="Бот Rar активен!")
@@ -305,13 +324,17 @@ def main():
         return
     init_db()
     
+    # ИСПРАВЛЕНО: Добавлен легальный сбор апдейтов о составе группы (allowed_updates)
     app = Application.builder().token(TOKEN).post_init(on_startup).build()
+    
+    app.add_error_handler(error_handler)
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     
     print("Запуск бота...")
-    app.run_polling()
+    # Разрешаем боту получать события об изменении участников
+    app.run_polling(allowed_updates=["message", "chat_member"])
 
 if __name__ == "__main__":
     main()
-                        
+    
