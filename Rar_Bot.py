@@ -49,7 +49,10 @@ def init_db():
             chat_id NUMERIC,
             text TEXT,
             author_name TEXT,
-            saved_by TEXT
+            saved_by TEXT,
+            file_id TEXT,
+            media_type TEXT,
+            caption TEXT
         )
     """)
     conn.commit()
@@ -107,23 +110,23 @@ def get_all_tracks_from_db():
     conn.close()
     return rows
 
-def save_quote(chat_id: int, text: str, author_name: str, saved_by: str):
+def save_quote(chat_id: int, text: str, author_name: str, saved_by: str, file_id: str = None, media_type: str = None, caption: str = None):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO quotes (chat_id, text, author_name, saved_by)
-        VALUES (%s, %s, %s, %s) RETURNING id
-    """, (chat_id, text, author_name, saved_by))
-    quote_id = cursor.fetchone()
+        INSERT INTO quotes (chat_id, text, author_name, saved_by, file_id, media_type, caption)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (chat_id, text, author_name, saved_by, file_id, media_type, caption))
+    quote_id = cursor.fetchone()[0]  # Извлекаем чистое число
     conn.commit()
     cursor.close()
     conn.close()
-    return quote_id[0]
+    return quote_id
 
 def get_all_quotes(chat_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, text, author_name, saved_by FROM quotes WHERE chat_id = %s", (chat_id,))
+    cursor.execute("SELECT id, text, author_name, saved_by, file_id, media_type, caption FROM quotes WHERE chat_id = %s", (chat_id,))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -214,10 +217,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
-                    caption=f" Rar успешно занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
+                    caption=f"✅ Rar успешно занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
                 )
             else:
-                await update.message.reply_text(f" Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
+                await update.message.reply_text(f"⚠️ Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
             return
 
     if update.message.text:
@@ -261,15 +264,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         elif clean == "rar запомни":
-            if not update.message.reply_to_message or not update.message.reply_to_message.text:
-                await update.message.reply_text(" Эту команду нужно писать ответом (реплаем) на текстовое сообщение, которое ты хочешь запомнить!")
+            if not update.message.reply_to_message:
+                await update.message.reply_text("⚠️ Ответь этой командой на сообщение, которое ты хочешь занести в мемориз!")
                 return
-            
-            quote_text = update.message.reply_to_message.text
-            author = update.message.reply_to_message.effective_user.first_name or "Кто-то"
+
+            target = update.message.reply_to_message
+            q_text = target.text
+            file_id = None
+            media_type = None
+            caption = target.caption
+
+            if target.photo:
+                file_id = target.photo[-1].file_id
+                media_type = "photo"
+            elif target.audio:
+                file_id = target.audio.file_id
+                media_type = "audio"
+            elif target.voice:
+                file_id = target.voice.file_id
+                media_type = "voice"
+
+            if not media_type and not q_text:
+                await update.message.reply_text("⚠️ Ой, Rar не умеет сохранять этот тип сообщений в цитатник.")
+                return
+
+            author = target.from_user.first_name if target.from_user else "Кто-то"
             saver = update.effective_user.first_name or "друг"
-            
-            q_id = save_quote(chat_id, quote_text, author, saver)
+
+            q_id = save_quote(chat_id, q_text, author, saver, file_id, media_type, caption)
             await update.message.reply_text(f"📝 Цитата успешно сохранена в мемориз под номером #{q_id}!")
             return
 
@@ -288,14 +310,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 available_quotes = quotes
                 
             selected = random.choice(available_quotes)
-            q_id, q_text, q_author, q_saved_by = selected
+            q_id, q_text, q_author, q_saved_by, file_id, media_type, q_caption = selected
             
             recent_quotes_history[chat_id].append(q_id)
             if len(recent_quotes_history[chat_id]) > 3:
                 recent_quotes_history[chat_id].pop(0)
+
+            if media_type:
+                base_text = f"💬 *Медиа-цитата от* _{escape_markdown(q_author)}_\n"
+                if q_caption:
+                    base_text += f"Подпись: \"_{escape_markdown(q_caption)}_\"\n"
+                base_text += f"\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
                 
-            response = fr"💬 *\"{escape_markdown(q_text)}\"*\n\n— _{escape_markdown(q_author)}_\n\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
-            await update.message.reply_text(response, parse_mode="MarkdownV2")
+                if media_type == "photo":
+                    await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=base_text, parse_mode="MarkdownV2")
+                elif media_type == "audio":
+                    await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=base_text, parse_mode="MarkdownV2")
+                elif media_type == "voice":
+                    await context.bot.send_voice(chat_id=chat_id, voice=file_id, caption=base_text, parse_mode="MarkdownV2")
+            else:
+                response = fr"💬 *\"{escape_markdown(q_text)}\"*\n\n— _{escape_markdown(q_author)}_\n\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
+                await update.message.reply_text(response, parse_mode="MarkdownV2")
             return
         elif clean == "rar удалить цитату":
             is_admin = False
@@ -307,22 +342,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 is_admin = False
 
             if not is_admin:
-                await update.message.reply_text(" Прости, но удалять цитаты могут только админы")
+                await update.message.reply_text("❌ Прости, но удалять цитаты из мемориз могут только админы группы!")
                 return
 
             if not update.message.reply_to_message:
-                await update.message.reply_text(" Ответь этой командой на сообщение бота с выданной цитатой, которую нужно стереть.")
+                await update.message.reply_text("⚠️ Ответь этой командой на сообщение бота с выданной цитатой, которую нужно стереть.")
                 return
 
-            reply_text = update.message.reply_to_message.text or ""
+            reply_text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
             match = re.search(r"id:\s*(\d+)", reply_text)
             
             if match:
                 target_id = int(match.group(1))
                 delete_quote_by_id(target_id)
-                await update.message.reply_text(f" Цитата #{target_id} навсегда удалена из чата.")
+                await update.message.reply_text(f"🗑️ Цитата #{target_id} навсегда удалена из базы данных чата.")
             else:
-                await update.message.reply_text(" Не удалось определить ID цитаты. Убедись, что ты отвечаешь на оригинальное сообщение Rar с цитатой.")
+                await update.message.reply_text("⚠️ Не удалось определить ID цитаты. Убедись, что ты отвечаешь на оригинальное сообщение Rar с цитатой.")
             return
 
         elif clean == "калл":
@@ -359,7 +394,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         elif clean == "rar.check":
-            status_msg = await update.message.reply_text(" Синхронизирую базу данных с участниками чата...")
+            status_msg = await update.message.reply_text("🔎 Синхронизирую базу данных с участниками чата...")
             try:
                 saved_members = get_chat_members(chat_id)
                 left_count = 0
