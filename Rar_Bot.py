@@ -106,7 +106,14 @@ def mark_user_as_greeted(user_id: int):
     cursor.close()
     conn.close()
 
-# ИСПРАВЛЕНО: Убрали лишнюю запятую в конце строки!
+def remove_user(chat_id: int, user_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE chat_id = %s AND user_id = %s", (chat_id, user_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,7 +132,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ЛОГИКА КОМАНДЫ "ДОБАВЬ" ДЛЯ ВСЕХ
+    # ЛОГИКА КОМАНДЫ "ДОБАВЬ"
     if update.message.text:
         incoming_text = update.message.text.lower().strip()
         if incoming_text in ["добавь", "добавить"]:
@@ -153,11 +160,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         clean = text.lower().strip()
 
+        # Функция принудительного обхода базы через Reply (поищи в ютм)
         if clean in ["поищи в ютм", "поищи в youtube music"] and update.message.reply_to_message:
             reply_msg = update.message.reply_to_message
             if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
                 try:
-                    orig_query = reply_msg.caption.split("Запрос:")[1].strip()
+                    orig_query = reply_msg.caption.split("Запрос:").strip()
                 except Exception:
                     orig_query = None
 
@@ -169,12 +177,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await status_msg.edit_text("❌ В глобальном поиске ничего не нашлось.")
                             return
                         
-                        track = search_results[0]
+                        track = search_results
                         video_id = track['videoId']
                         title = track['title']
                         artists = ", ".join([a['name'] for a in track['artists']])
                         
-                        download_url = "https://wuk.sh"
+                        # Переключено на новый стабильный Cobalt-инстанс
+                        download_url = "https://hyper.lol"
                         payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
                         headers = {"Accept": "application/json", "Content-Type": "application/json"}
                         
@@ -219,6 +228,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 members_tags = []
                 for m_id, m_username, m_first_name in saved_members:
                     if int(m_id) == context.bot.id: continue
+                    
+                    # Возвращена и оптимизирована проверка на "мертвые души"
+                    try:
+                        current_status = await context.bot.get_chat_member(chat_id, int(m_id))
+                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                            remove_user(chat_id, int(m_id))
+                            continue
+                    except Exception:
+                        remove_user(chat_id, int(m_id))
+                        continue
+                        
                     if m_username:
                         members_tags.append(f"@{escape_markdown(m_username)}")
                     else:
@@ -254,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
-            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music + Конвертер Cobalt
+            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music + Новый стабильный инстанс Cobalt
             try:
                 await status_msg.edit_text("⏳ В архиве нет. Загружаю аудиофайл из YouTube Music...")
                 search_results = ytm.search(query, filter="songs", limit=1)
@@ -263,13 +283,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
                     return
                 
-                # Исправлено: берем первый элемент списка по индексу [0]
-                track = search_results[0]
+                track = search_results
                 video_id = track['videoId']
                 title = track['title']
                 artists = ", ".join([a['name'] for a in track['artists']])
                 
-                download_url = "https://wuk.sh"
+                download_url = "https://hyper.lol"
                 payload = {"url": f"https://youtube.com{video_id}", "isAudioOnly": True}
                 headers = {"Accept": "application/json", "Content-Type": "application/json"}
                 
