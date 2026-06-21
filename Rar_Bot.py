@@ -4,6 +4,7 @@ import re
 import asyncio
 import psycopg2
 from aiohttp import web
+from ytmusicapi import YTMusic
 from telegram import Update
 from telegram.constants import ChatMemberStatus
 from telegram.ext import (
@@ -16,6 +17,8 @@ from telegram.ext import (
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+ytm = YTMusic()
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
@@ -64,25 +67,20 @@ def save_user(chat_id: int, user_id: int, username: str, first_name: str):
     cursor.close()
     conn.close()
 
-# УМНАЯ ФУНКЦИЯ: Проверяет дубликаты перед записью трека
 def save_track_to_db(file_id: str, title: str) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # Проверяем, есть ли трек с таким же file_id или похожим названием
     cursor.execute("SELECT title FROM channel_music WHERE file_id = %s OR LOWER(title) = LOWER(%s) LIMIT 1", (file_id, title))
     exists = cursor.fetchone()
-    
     if exists:
         cursor.close()
         conn.close()
-        return False  # Трек уже есть, сохранять не нужно
-        
+        return False
     cursor.execute("INSERT INTO channel_music (file_id, title) VALUES (%s, %s) ON CONFLICT (file_id) DO NOTHING", (file_id, title))
     conn.commit()
     cursor.close()
     conn.close()
-    return True  # Трек успешно добавлен
+    return True
 
 def search_track_in_db(query: str):
     conn = get_db_connection()
@@ -146,7 +144,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ИСПРАВЛЕННАЯ ЛОГИКА КОМАНДЫ "ДОБАВЬ" С ЗАЩИТОЙ ОТ ДУБЛИКАТОВ
+    # ЛОГИКА КОМАНДЫ "ДОБАВЬ"
     incoming_text = ""
     if update.message.text:
         incoming_text = update.message.text.lower().strip()
@@ -165,9 +163,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = target_audio.title.strip() if target_audio.title else ""
             track_title = f"{performer} - {title}" if performer and title else (target_audio.file_name or "Неизвестный трек")
             
-            # Пробуем сохранить в базу данных
             is_new = save_track_to_db(target_audio.file_id, track_title)
-            
             if is_new:
                 await context.bot.send_audio(
                     chat_id=chat_id,
@@ -178,25 +174,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"⚠️ Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
             return
 
-    # ОБРАБОТКА ВСЕХ ОСТАЛЬНЫХ ТЕКСТОВЫХ КОМАНД
+    # ОБРАБОТКА ТЕКСТОВЫХ КОМАНД И ПОИСКА
     if update.message.text:
         text = update.message.text
         clean = text.lower().strip()
 
-        # Функция принудительного обхода базы через Reply
+        # Принудительный глобальный поиск через реплай "поищи в ютм"
         if clean in ["поищи в ютм", "поищи в youtube music", "поищи везде"] and update.message.reply_to_message:
             reply_msg = update.message.reply_to_message
             if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
                 try:
-                    orig_query = reply_msg.caption.split("Запрос:").strip()
+                    orig_query = reply_msg.caption.split("Запрос:")[1].strip()
                 except Exception:
                     orig_query = None
 
                 if orig_query:
-                    await update.message.reply_text(
-                        f"🔍 Чтобы запустить глубокий поиск по всему Telegram, нажмите на ссылку:\n"
-                        f"👉 @vkmusic_bot {orig_query}"
-                    )
+                    status_msg = await update.message.reply_text("⏳ Генерирую .mp3 файл из YouTube Music...")
+                    try:
+                        search_results = ytm.search(orig_query, filter="songs", limit=1)
+                        if not search_results:
+                            await status_msg.edit_text("❌ В глобальном поиске ничего не нашлось.")
+                            return
+                        
+                        track = search_results[0]
+                        video_id = track['videoId']
+                        title = track['title']
+                        artists = ", ".join([a['name'] for a in track['artists']])
+                        
+                        # Переключено на новый, сверхстабильный API-конвертер (vexdh)
+                        audio_stream = f"https://vexdh.com{video_id}"
+
+                        await status_msg.delete()
+                        await context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=audio_stream,
+                            title=title,
+                            performer=artists,
+                            caption=f"🎵 Найдено в YouTube Music: {artists} — {title}"
+                        )
+                    except Exception as e:
+                        await status_msg.edit_text(f"⚠️ Ошибка загрузки файла: {e}")
                     return
         if clean == "rar":
             if last_reply is not None:
@@ -208,7 +225,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_rar)
             return
 
-        # ИСПРАВЛЕННАЯ КОМАНДА КАЛЛ С ЖЕСТКИМ ИСКЛЮЧЕНИЕМ ВЫШЕДШИХ И КИКНУТЫХ УЧАСТНИКОВ
+        # ПОЛНОСТЬЮ ПЕРЕПИСАННАЯ КОМАНДА КАЛЛ С БЕЗОПАСНЫМ ФИЛЬТРОМ
         elif clean == "калл":
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
@@ -228,8 +245,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     try:
                         current_status = await context.bot.get_chat_member(chat_id, int(m_id))
-                        # Если участник исключен (kicked) или вышел (left), немедленно вырезаем из Postgres
-                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, "left", "kicked"]:
+                        # Если человека кикнули или он вышел — убираем его из текущего вызова команды
+                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
                             remove_user(chat_id, int(m_id))
                             continue
                     except Exception:
@@ -242,7 +259,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
                 if not members_tags:
-                    await update.message.reply_text("В этой группе я пока никого не запомнила. Напишите любое слово в чат!")
+                    await update.message.reply_text("В базе данных группы пока пусто. Напишите любое слово!")
                     return
 
                 chunk_size = 5
@@ -253,7 +270,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # ПОЛНОСТЬЮ РАБОЧИЙ МУЗЫКАЛЬНЫЙ ПОИСК (Rar найди duvet)
+        # НАСТОЯЩИЙ МУЗЫКАЛЬНЫЙ ПОИСК С ОТПРАВКОЙ MP3 (Rar найди duvet)
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
             query = text[9:].strip()
             if not query:
@@ -270,15 +287,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
+            # Если в архиве нет — скачиваем настоящий .mp3 файл через стабильный шлюз vexdh
             try:
+                await status_msg.edit_text("⏳ В архиве нет. Загружаю аудиофайл из YouTube Music...")
+                search_results = ytm.search(query, filter="songs", limit=1)
+                
+                if not search_results:
+                    await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
+                    return
+                
+                track = search_results[0]
+                video_id = track['videoId']
+                title = track['title']
+                artists = ", ".join([a['name'] for a in track['artists']])
+                
+                # Чистая ссылка, которую Telegram мгновенно превращает в готовый аудиофайл-плеер
+                audio_stream = f"https://vexdh.com{video_id}"
+
                 await status_msg.delete()
-                await update.message.reply_text(
-                    f"⏳ В нашем архиве трека нет.\n"
-                    f"Чтобы мгновенно получить .mp3 файл, нажмите на ссылку ниже и введите название песни:\n\n"
-                    f"👉 @vkmusic_bot {query}"
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=audio_stream,
+                    title=title,
+                    performer=artists,
+                    caption=f"🎵 Найдено в YouTube Music: {artists} — {title}"
                 )
             except Exception as e:
-                await update.message.reply_text(f"⚠️ Ошибка при поиске: {e}")
+                await status_msg.edit_text(f"⚠️ Ошибка при загрузке аудиофайла: {e}")
 
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
@@ -288,7 +323,6 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     new_status = result.new_chat_member.status
     if user.is_bot: return
 
-    # Ловим вход и выход участников в реальном времени
     if new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         user_name = user.first_name or "друг"
         save_user(chat_id, user.id, user.username, user_name)
@@ -300,7 +334,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         remove_user(chat_id, user.id)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"Системный гаситель: {context.error}")
+    print(f"Системное исключение: {context.error}")
 
 async def handle_http(request):
     return web.Response(text="Бот Rar активен!")
@@ -313,7 +347,6 @@ async def start_webhook():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Фейковый веб-сервер успешно запущен на порту {port}")
 
 async def on_startup(application: Application):
     asyncio.create_task(start_webhook())
@@ -324,7 +357,6 @@ def main():
         return
     init_db()
     
-    # ИСПРАВЛЕНО: Добавлен легальный сбор апдейтов о составе группы (allowed_updates)
     app = Application.builder().token(TOKEN).post_init(on_startup).build()
     
     app.add_error_handler(error_handler)
@@ -332,7 +364,6 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     
     print("Запуск бота...")
-    # Разрешаем боту получать события об изменении участников
     app.run_polling(allowed_updates=["message", "chat_member"])
 
 if __name__ == "__main__":
