@@ -89,7 +89,6 @@ def search_track_in_db(query: str):
     conn.close()
     return row
 
-# Функция для получения ВСЕХ треков из базы (для рандома)
 def get_all_tracks_from_db():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -132,11 +131,10 @@ def get_chat_members(chat_id: int):
     cursor.close()
     conn.close()
     return rows
-
 answers_rar = ["Привееет!", "Что такое?", "Звали?", "Я не сплю... Честно!!!"]
 last_reply = None
-# Словарь для вечного хранения истории последних 5 треков в чатах {chat_id: [file_id1, file_id2, ...]}
 recent_tracks_history = {}
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_reply, recent_tracks_history
     if not update.message: return
@@ -146,6 +144,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
     first_name = update.effective_user.first_name or "друг"
 
+    # Запоминаем пользователя при любой текстовой активности
     save_user(chat_id, user_id, username, first_name)
 
     if not is_user_greeted(user_id):
@@ -153,13 +152,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ЛОГИКА КОМАНДЫ "ДОБАВЬ"
     incoming_text = ""
     if update.message.text:
         incoming_text = update.message.text.lower().strip()
     elif update.message.caption:
         incoming_text = update.message.caption.lower().strip()
 
+    # ЛОГИКА КОМАНДЫ "ДОБАВЬ"
     if incoming_text in ["добавь", "добавить"]:
         target_audio = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
@@ -183,50 +182,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"⚠️ Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
             return
 
-    # ОБРАБОТКА ТЕКСТОВЫХ КОМАНД
     if update.message.text:
         text = update.message.text
         clean = text.lower().strip()
 
         if clean == "rar":
-            if last_reply is not None:
-                available = [a for a in answers_rar if a != last_reply]
-            else:
-                available = answers_rar
+            available = [a for a in answers_rar if a != last_reply] if last_reply else answers_rar
             reply_rar = random.choice(available)
             last_reply = reply_rar
             await update.message.reply_text(reply_rar)
             return
-        # УМНАЯ КОМАНДА: ВЫДАЧА СЛУЧАЙНОЙ ПЕСНИ С ЗАЩИТОЙ ОТ ПОВТОРОВ
+
         elif clean in ["rar дай песню", "рар дай песню"]:
             all_tracks = get_all_tracks_from_db()
-            
             if not all_tracks:
                 await update.message.reply_text("В моём архиве пока нет ни одной сохранённой песни. Админы, добавьте музыку!")
                 return
             
-            # Инициализируем историю для текущего чата, если её ещё нет
             if chat_id not in recent_tracks_history:
                 recent_tracks_history[chat_id] = []
                 
-            # Фильтруем треки, убирая из выбора последние 5 отправленных
-            available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
-            
-            # Если из-за фильтра ничего не осталось (база маленькая), сбрасываем историю для разнообразия
+            available_tracks = [t for t in all_tracks if t not in recent_tracks_history[chat_id]]
             if not available_tracks:
                 recent_tracks_history[chat_id] = []
                 available_tracks = all_tracks
                 
-            # Выбираем случайный уникальный трек
             selected_track = random.choice(available_tracks)
             file_id, track_title = selected_track
             
-            # Сохраняем в память последних 5 треков
             recent_tracks_history[chat_id].append(file_id)
             if len(recent_tracks_history[chat_id]) > 5:
                 recent_tracks_history[chat_id].pop(0)
-                
-            # Отправляем аудиофайл с твоим красивым описанием
+
             await context.bot.send_audio(
                 chat_id=chat_id,
                 audio=file_id,
@@ -234,8 +221,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2"
             )
             return
-
-        # ИСПРАВЛЕННАЯ КОМАНДА КАЛЛ
+        # ИСПРАВЛЕННАЯ ОПТИМИЗИРОВАННАЯ КОМАНДА КАЛЛ
         elif clean == "калл":
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
@@ -247,28 +233,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             try:
                 saved_members = get_chat_members(chat_id)
+                if not saved_members:
+                    await update.message.reply_text("В базе данных группы пока пусто. Напишите любое слово!")
+                    return
+
                 members_tags = []
                 
                 for row in saved_members:
                     m_id, m_username, m_first_name = row
-                    if int(m_id) == context.bot.id: continue
+                    m_id = int(m_id)
                     
+                    if m_id == context.bot.id: 
+                        continue
+                    
+                    # Легкая и быстрая проверка: дергаем API только если у пользователя нет username
+                    # Если пользователя нет в чате, Telegram вернет ошибку, и мы удалим его из БД
                     try:
-                        current_status = await context.bot.get_chat_member(chat_id, int(m_id))
-                        if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                            remove_user(chat_id, int(m_id))
-                            continue
+                        if not m_username:
+                            current_status = await context.bot.get_chat_member(chat_id, m_id)
+                            if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                                remove_user(chat_id, m_id)
+                                continue
                     except Exception:
-                        remove_user(chat_id, int(m_id))
+                        remove_user(chat_id, m_id)
                         continue
                         
                     if m_username:
                         members_tags.append(f"@{escape_markdown(m_username)}")
                     else:
-                        members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
+                        members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id})")
 
                 if not members_tags:
-                    await update.message.reply_text("В базе данных группы пока пусто. Напишите любое слово!")
+                    await update.message.reply_text("Все сохраненные пользователи покинули группу.")
                     return
 
                 chunk_size = 5
@@ -279,7 +275,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # ЛОКАЛЬНЫЙ ПОИСК МУЗЫКИ ПО БАЗЕ
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
             query = text[9:].strip()
             if not query:
@@ -287,7 +282,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             status_msg = await update.message.reply_text("🔍 Ищу трек в нашем архиве...")
-
             local_track = search_track_in_db(query)
             if local_track:
                 file_id, track_title = local_track
@@ -336,7 +330,7 @@ async def on_startup(application: Application):
 
 def main():
     if not TOKEN or not DATABASE_URL:
-        print("Ошибка: Переменные окуржения не заданы!")
+        print("Ошибка: Переменные окружения не заданы!")
         return
     init_db()
     
@@ -344,11 +338,11 @@ def main():
     
     app.add_error_handler(error_handler)
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.ALL, handle_message))
     
     print("Запуск бота...")
-    app.run_polling(allowed_updates=["message", "chat_member"])
+    app.run_polling(allowed_updates=["message", "chat_member", "my_chat_member"])
 
 if __name__ == "__main__":
     main()
-                        
+            
