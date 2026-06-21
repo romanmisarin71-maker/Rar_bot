@@ -4,7 +4,6 @@ import re
 import asyncio
 import psycopg2
 from aiohttp import web
-from ytmusicapi import YTMusic
 from telegram import Update
 from telegram.constants import ChatMemberStatus
 from telegram.ext import (
@@ -17,8 +16,6 @@ from telegram.ext import (
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
-ytm = YTMusic()
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
@@ -141,7 +138,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ЛОГИКА КОМАНДЫ "ДОБАВЬ"
+    # ЛОГИКА КОМАНДЫ "ДОБАВЬ" (Для всех)
     if update.message.text:
         incoming_text = update.message.text.lower().strip()
         if incoming_text in ["добавь", "добавить"]:
@@ -169,41 +166,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         clean = text.lower().strip()
 
-        # Функция принудительного обхода базы через Reply (поищи в ютм)
-        if clean in ["поищи в ютм", "поищи в youtube music"] and update.message.reply_to_message:
+        # Функция принудительного обхода базы через Reply
+        if clean in ["поищи в ютм", "поищи в youtube music", "поищи везде"] and update.message.reply_to_message:
             reply_msg = update.message.reply_to_message
             if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
                 try:
-                    orig_query = reply_msg.caption.split("Запрос:")[1].strip()
+                    orig_query = reply_msg.caption.split("Запрос:").strip()
                 except Exception:
                     orig_query = None
 
                 if orig_query:
-                    status_msg = await update.message.reply_text("⏳ Подключаюсь к YouTube Music...")
-                    try:
-                        search_results = ytm.search(orig_query, filter="songs", limit=1)
-                        if not search_results:
-                            await status_msg.edit_text("❌ В глобальном поиске ничего не нашлось.")
-                            return
-                        
-                        track = search_results[0]
-                        video_id = track['videoId']
-                        title = track['title']
-                        artists = ", ".join([a['name'] for a in track['artists']])
-                        
-                        # Переписано на стабильный, высокоскоростной аудиострим напрямую
-                        audio_stream = f"https://youtube.com{video_id}"
-
-                        await status_msg.delete()
-                        await context.bot.send_audio(
-                            chat_id=chat_id,
-                            audio=audio_stream,
-                            title=title,
-                            performer=artists,
-                            caption=f"🎵 Глобальный поиск: {artists} — {title}"
-                        )
-                    except Exception as e:
-                        await status_msg.edit_text(f"⚠️ Ошибка загрузки: {e}")
+                    await update.message.reply_text(
+                        f"🔍 Чтобы запустить глубокий поиск по всему Telegram, нажмите на ссылку:\n"
+                        f"👉 @vkmusic_bot {orig_query}"
+                    )
                     return
         if clean == "rar":
             if last_reply is not None:
@@ -215,28 +191,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_rar)
             return
 
+        # СТРОГАЯ И ИСПРАВЛЕННАЯ КОМАНДА КАЛЛ С ТОЧНОЙ ПРОВЕРКОЙ НА АДМИНА
         elif clean == "калл":
-            sender = await context.bot.get_chat_member(chat_id, user_id)
-            if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                await update.message.reply_text("Прости, но калл доступен только админам")
+            try:
+                # Мгновенная проверка прав: если не админ и не создатель — сразу выдаем отказ
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но калл доступен только админам")
+                    return
+            except Exception as e:
+                # Если у самого бота нет прав админа, он не сможет выполнить get_chat_member
+                await update.message.reply_text(f"⚠️ Мне нужны права администратора, чтобы проверить ваши права! Ошибка: {e}")
                 return
+
             try:
                 saved_members = get_chat_members(chat_id)
                 members_tags = []
                 
-                # ИСПРАВЛЕНО: Правильная распаковка кортежа данных из базы PostgreSQL
                 for row in saved_members:
                     m_id, m_username, m_first_name = row
                     if int(m_id) == context.bot.id: continue
                     
+                    # Проверяем, находится ли пользователь еще в группе
                     try:
                         current_status = await context.bot.get_chat_member(chat_id, int(m_id))
                         if current_status.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
                             remove_user(chat_id, int(m_id))
                             continue
                     except Exception:
-                        remove_user(chat_id, int(m_id))
-                        continue
+                        pass
                         
                     if m_username:
                         members_tags.append(f"@{escape_markdown(m_username)}")
@@ -244,7 +227,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
                 if not members_tags:
-                    await update.message.reply_text("В этой группе я пока никого не запомнила. Напишите что-нибудь!")
+                    await update.message.reply_text("В этой группе я пока никого не запомнила. Напишите любое слово в чат!")
                     return
 
                 chunk_size = 5
@@ -252,10 +235,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chunk = members_tags[i:i + chunk_size]
                     await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
             except Exception as e:
-                await update.message.reply_text(f"Ошибка команды: {e}")
+                await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # ПОИСК МУЗЫКИ (Rar найди duvet)
+        # МУЗЫКАЛЬНЫЙ ПОИСК (Rar найди duvet)
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
             query = text[9:].strip()
             if not query:
@@ -264,7 +247,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             status_msg = await update.message.reply_text("🔍 Ищу трек в нашем архиве...")
 
-            # ПРИОРИТЕТ 1: Поиск в базе твоего канала
             local_track = search_track_in_db(query)
             if local_track:
                 file_id, track_title = local_track
@@ -273,34 +255,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
-            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music со стабильной аудио-ссылкой
             try:
-                await status_msg.edit_text("⏳ В архиве нет. Загружаю аудиофайл из YouTube Music...")
-                search_results = ytm.search(query, filter="songs", limit=1)
-                
-                if not search_results:
-                    await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
-                    return
-                
-                # ИСПРАВЛЕНО: Безопасное извлечение первого элемента списка
-                track = search_results[0]
-                video_id = track['videoId']
-                title = track['title']
-                artists = ", ".join([a['name'] for a in track['artists']])
-                
-                # Чистая, стабильная аудио-ссылка для плеера Telegram
-                audio_stream = f"https://youtube.com{video_id}"
-
                 await status_msg.delete()
-                await context.bot.send_audio(
-                    chat_id=chat_id,
-                    audio=audio_stream,
-                    title=title,
-                    performer=artists,
-                    caption=f"🎵 Найдено в YouTube Music: {artists} — {title}"
+                await update.message.reply_text(
+                    f"⏳ В нашем архиве трека нет.\n"
+                    f"Чтобы мгновенно получить .mp3 файл, нажмите на ссылку ниже и введите название песни:\n\n"
+                    f"👉 @vkmusic_bot {query}"
                 )
             except Exception as e:
-                await status_msg.edit_text(f"⚠️ Ошибка при загрузке аудиофайла: {e}")
+                await update.message.reply_text(f"⚠️ Ошибка при поиске: {e}")
 
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
@@ -351,4 +314,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+                        
