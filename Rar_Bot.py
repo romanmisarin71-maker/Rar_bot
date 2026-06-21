@@ -214,10 +214,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
-                    caption=f"✅ Rar успешно занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
+                    caption=f" Rar успешно занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
                 )
             else:
-                await update.message.reply_text(f"⚠️ Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
+                await update.message.reply_text(f" Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
             return
 
     if update.message.text:
@@ -262,7 +262,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif clean == "rar запомни":
             if not update.message.reply_to_message or not update.message.reply_to_message.text:
-                await update.message.reply_text("⚠️ Эту команду нужно писать ответом (реплаем) на текстовое сообщение, которое ты хочешь запомнить!")
+                await update.message.reply_text(" Эту команду нужно писать ответом (реплаем) на текстовое сообщение, которое ты хочешь запомнить!")
                 return
             
             quote_text = update.message.reply_to_message.text
@@ -294,7 +294,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(recent_quotes_history[chat_id]) > 3:
                 recent_quotes_history[chat_id].pop(0)
                 
-            response = f"💬 *\"{escape_markdown(q_text)}\"*\n\n— _{escape_markdown(q_author)}_\n\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
+            response = fr"💬 *\"{escape_markdown(q_text)}\"*\n\n— _{escape_markdown(q_author)}_\n\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
             await update.message.reply_text(response, parse_mode="MarkdownV2")
             return
         elif clean == "rar удалить цитату":
@@ -307,11 +307,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 is_admin = False
 
             if not is_admin:
-                await update.message.reply_text("❌ Прости, но удалять цитаты из мемориз могут только админы группы!")
+                await update.message.reply_text(" Прости, но удалять цитаты могут только админы")
                 return
 
             if not update.message.reply_to_message:
-                await update.message.reply_text("⚠️ Ответь этой командой на сообщение бота с выданной цитатой, которую нужно стереть.")
+                await update.message.reply_text(" Ответь этой командой на сообщение бота с выданной цитатой, которую нужно стереть.")
                 return
 
             reply_text = update.message.reply_to_message.text or ""
@@ -320,9 +320,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if match:
                 target_id = int(match.group(1))
                 delete_quote_by_id(target_id)
-                await update.message.reply_text(f"🗑️ Цитата #{target_id} навсегда удалена из базы данных чата.")
+                await update.message.reply_text(f" Цитата #{target_id} навсегда удалена из чата.")
             else:
-                await update.message.reply_text("⚠️ Не удалось определить ID цитаты. Убедись, что ты отвечаешь на оригинальное сообщение Rar с цитатой.")
+                await update.message.reply_text(" Не удалось определить ID цитаты. Убедись, что ты отвечаешь на оригинальное сообщение Rar с цитатой.")
             return
 
         elif clean == "калл":
@@ -359,7 +359,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         elif clean == "rar.check":
-            status_msg = await update.message.reply_text("🔎 Синхронизирую базу данных с участниками чата...")
+            status_msg = await update.message.reply_text(" Синхронизирую базу данных с участниками чата...")
             try:
                 saved_members = get_chat_members(chat_id)
                 left_count = 0
