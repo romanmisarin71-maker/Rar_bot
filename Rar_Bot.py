@@ -54,11 +54,9 @@ async def handle_message(update: Update, context):
             return
 
         try:
-            # Получаем количество участников
             members_count = await context.bot.get_chat_member_count(update.effective_chat.id)
             members = []
 
-            # Перебираем всех участников по ID (начиная с 1 до members_count)
             for i in range(1, members_count + 1):
                 try:
                     member = await context.bot.get_chat_member(update.effective_chat.id, i)
@@ -90,4 +88,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()             
+    main()
