@@ -106,7 +106,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
-    # ЛОГИКА ДОБАВЛЕНИЯ МУЗЫКИ В БАЗУ КАНАЛА
+    # ИСПРАВЛЕННАЯ ЛОГИКА КОМАНДЫ "ДОБАВЬ"
     if update.message.reply_to_message and update.message.reply_to_message.audio:
         text_clean = update.message.text.lower().strip() if update.message.text else ""
         if text_clean in ["добавь", "добавить"]:
@@ -121,7 +121,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     track_title = audio.file_name or "Неизвестный трек"
                 
                 save_track_to_db(audio.file_id, track_title)
-                await update.message.reply_text(f"✅ Трек успешно добавлен в архив канала под именем: {track_title}")
+                # Обычный текст ответа, защищенный от падения из-за спецсимволов
+                await update.message.reply_text(f"✅ Трек успешно добавлен в архив канала: {track_title}")
                 return
 
     # ОБРАБОТКА ТЕКСТА И КОМАНД ПОИСКА
@@ -134,7 +135,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_msg = update.message.reply_to_message
             if reply_msg.from_user.id == context.bot.id and reply_msg.caption and "Запрос:" in reply_msg.caption:
                 try:
-                    orig_query = reply_msg.caption.split("Запрос:").strip()
+                    orig_query = reply_msg.caption.split("Запрос:")[1].strip()
                 except Exception:
                     orig_query = None
 
@@ -146,14 +147,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await status_msg.edit_text("❌ На YouTube Music этот трек найти не удалось.")
                             return
                         
-                        track = search_results
+                        # Исправлено: берем первый элемент списка [0]
+                        track = search_results[0]
                         video_id = track['videoId']
                         title = track['title']
                         artists = ", ".join([a['name'] for a in track['artists']])
                         
+                        # Прямой API-конвертер в MP3 файл
                         download_url = f"https://vexdh.com{video_id}"
                         
                         await status_msg.delete()
+                        # Отправляем аудиофайл напрямую в плеер
                         await context.bot.send_audio(
                             chat_id=chat_id,
                             audio=download_url,
@@ -201,7 +205,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды: {e}")
             return
 
-        # ИСПРАВЛЕННЫЙ ПОИСК МУЗЫКИ: Имя на английском, команда на русском (Rar найди duvet)
+        # ИСПРАВЛЕННЫЙ ПОИСК МУЗЫКИ: Имя Rar на английском, команда на русском
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
             query = text[9:].strip()
             if not query:
@@ -210,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             status_msg = await update.message.reply_text("🔍 Ищу трек в нашем архиве...")
 
-            # ПРИОРИТЕТ 1: Поиск в базе твоего канала
+            # ПРИОРИТЕТ 1: Поиск по базе твоего музыкального канала
             local_track = search_track_in_db(query)
             if local_track:
                 file_id, track_title = local_track
@@ -219,7 +223,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
 
-            # ПРИОРИТЕТ 2: Скачиваем настоящий mp3 файл из YouTube Music
+            # ПРИОРИТЕТ 2: Глобальный поиск в YouTube Music со скачиванием MP3
             try:
                 await status_msg.edit_text("⏳ В архиве нет. Скачиваю аудиофайл из YouTube Music...")
                 search_results = ytm.search(query, filter="songs", limit=1)
@@ -228,14 +232,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await status_msg.edit_text("❌ Ничего не нашлось ни в архиве, ни на YouTube Music.")
                     return
                 
-                track = search_results
+                # Исправлено: берем первый элемент списка [0]
+                track = search_results[0]
                 video_id = track['videoId']
                 title = track['title']
                 artists = ", ".join([a['name'] for a in track['artists']])
                 
+                # Запрос к конвертеру, отдающему прямой аудиофайл
                 download_url = f"https://vexdh.com{video_id}"
                 
                 await status_msg.delete()
+                # Отправляем полноценный .mp3 файл в плеер чата
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=download_url,
