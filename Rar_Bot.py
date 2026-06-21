@@ -165,8 +165,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chunk_size = 5
             for i in range(0, len(members_tags), chunk_size):
                 chunk = members_tags[i:i + chunk_size]
-                # Добавлена литера r перед строкой
-                await update.message.reply_text(r"Минуточку внимания\!\!\!\n" + "\n".join(chunk), parse_mode="MarkdownV2")
+                # Текст стал жирным благодаря звёздочкам по краям
+                await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
         except Exception as e:
             await update.message.reply_text(f"Ошибка команды: {e}")
 
@@ -202,4 +202,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+            
