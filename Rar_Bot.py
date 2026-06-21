@@ -320,7 +320,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 base_text = f"💬 *Медиа-цитата от* _{escape_markdown(q_author)}_\n"
                 if q_caption:
                     base_text += f"Подпись: \"_{escape_markdown(q_caption)}_\"\n"
-                base_text += f"\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
+                base_text += fr"\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
                 
                 if media_type == "photo":
                     await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=base_text, parse_mode="MarkdownV2")
