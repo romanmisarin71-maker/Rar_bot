@@ -173,7 +173,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = target_audio.title.strip() if target_audio.title else ""
             track_title = f"{performer} - {title}" if performer and title else (target_audio.file_name or "Неизвестный трек")
             
-            is_new = save_track_to_db(file_id, track_title)
+            is_new = save_track_to_db(target_audio.file_id, track_title)
+            
             if is_new:
                 await context.bot.send_audio(
                     chat_id=chat_id,
