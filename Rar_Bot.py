@@ -174,10 +174,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
-                    caption=f"✅ Rar успешно занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
+                    caption=f" Я занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
                 )
             else:
-                await update.message.reply_text(f"⚠️ Этот трек уже бережно сохранен в нашем архиве под именем: {track_title}")
+                await update.message.reply_text(f" Этот трек уже бережно сохранен в моей коллекции под именем: {track_title}")
             return
 
     if update.message.text:
@@ -191,10 +191,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_rar)
             return
 
-        elif clean in ["rar дай песню", "рар дай песню"]:
+        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку"]:
             all_tracks = get_all_tracks_from_db()
             if not all_tracks:
-                await update.message.reply_text("В моём архиве пока нет ни одной сохранённой песни. Админы, добавьте музыку!")
+                await update.message.reply_text("В моей коллекции пока нет ни одной сохранённой песни. Админы, добавьте музыку!")
                 return
             
             if chat_id not in recent_tracks_history:
@@ -245,7 +245,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
-                chunk_size = 5
+                chunk_size = 1
                 for i in range(0, len(members_tags), chunk_size):
                     chunk = members_tags[i:i + chunk_size]
                     await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
@@ -304,16 +304,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Напиши название песни, например: Rar найди duvet")
                 return
             
-            status_msg = await update.message.reply_text("🔍 Ищу трек в нашем архиве...")
+            status_msg = await update.message.reply_text(" Ищу трек в своей коллекции...")
             local_track = search_track_in_db(query)
             if local_track:
                 file_id, track_title = local_track
                 await status_msg.delete()
-                caption_text = f"✨ Найдено в архиве канала: {track_title}\n\nЗапрос: {query}"
+                caption_text = f"✨ Вот что нашла у себя в коллекции: {track_title}\n\nЗапрос: {query}"
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption_text)
                 return
             else:
-                await status_msg.edit_text("❌ К сожалению, такой песни в нашем локальном архиве канала пока нет.")
+                await status_msg.edit_text(" К сожалению, такой песни в моей коллекции пока нет.")
 
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
