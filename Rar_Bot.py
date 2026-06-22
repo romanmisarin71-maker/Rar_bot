@@ -234,7 +234,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if chat_id not in recent_tracks_history:
                 recent_tracks_history[chat_id] = []
                 
-            available_tracks = [t for t in all_tracks if t not in recent_tracks_history[chat_id]]
+            available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
             if not available_tracks:
                 recent_tracks_history[chat_id] = []
                 available_tracks = all_tracks
