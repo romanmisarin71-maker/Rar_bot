@@ -255,14 +255,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(recent_tracks_history[chat_id]) > 5:
                 recent_tracks_history[chat_id].pop(0)
 
+            # ИСПРАВЛЕНО: Убрали опасное экранирование !, сделали красивый перенос строки без флагов 'r'
+            caption_text = f"Вот ваша песня!\n\n*{escape_markdown(track_title)}*"
             await context.bot.send_audio(
                 chat_id=chat_id,
                 audio=file_id,
-                caption=fr"Вот ваша песня\!\n\n*{escape_markdown(track_title)}*",
+                caption=caption_text,
                 parse_mode="MarkdownV2"
             )
             return
 
+        # УМНАЯ ВСЕЯДНАЯ КОМАНДА: RAR ЗАПОМНИ
         elif clean == "rar запомни":
             if not update.message.reply_to_message:
                 await update.message.reply_text("⚠️ Ответь этой командой на сообщение, которое ты хочешь занести в мемориз!")
@@ -295,6 +298,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"📝 Цитата успешно сохранена в мемориз под номером #{q_id}!")
             return
 
+        # УМНАЯ КОМАНДА ВЫДАЧИ: RAR ЗАЦИТИРУЙ (БЕЗ СЫРЫХ СТРОК С ЧИСТЫМ ПЕРЕНОСОМ)
         elif clean in ["rar зацетируй", "rar зацитируй"]:
             quotes = get_all_quotes(chat_id)
             if not quotes:
@@ -304,7 +308,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if chat_id not in recent_quotes_history:
                 recent_quotes_history[chat_id] = []
                 
-            available_quotes = [q for q in quotes if q[0] not in recent_quotes_history[chat_id]]
+            available_quotes = [q for q in quotes if q not in recent_quotes_history[chat_id]]
             if not available_quotes:
                 recent_quotes_history[chat_id] = []
                 available_quotes = quotes
@@ -316,11 +320,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(recent_quotes_history[chat_id]) > 3:
                 recent_quotes_history[chat_id].pop(0)
 
+            # Формируем красивую подпись БЕЗ экранирования круглых скобок в f-строках
             if media_type:
                 base_text = f"💬 *Медиа-цитата от* _{escape_markdown(q_author)}_\n"
                 if q_caption:
                     base_text += f"Подпись: \"_{escape_markdown(q_caption)}_\"\n"
-                base_text += fr"\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
+                base_text += f"(сохранил: {escape_markdown(q_saved_by)}, id: {q_id})"
                 
                 if media_type == "photo":
                     await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=base_text, parse_mode="MarkdownV2")
@@ -329,7 +334,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif media_type == "voice":
                     await context.bot.send_voice(chat_id=chat_id, voice=file_id, caption=base_text, parse_mode="MarkdownV2")
             else:
-                response = fr"💬 *\"{escape_markdown(q_text)}\"*\n\n— _{escape_markdown(q_author)}_\n\(сохранил: {escape_markdown(q_saved_by)}, id: {q_id}\)"
+                # Если это обычный текст
+                response = f"💬 *\"{escape_markdown(q_text)}\"*\n\n— _{escape_markdown(q_author)}_\n(сохранил: {escape_markdown(q_saved_by)}, id: {q_id})"
                 await update.message.reply_text(response, parse_mode="MarkdownV2")
             return
         elif clean == "rar удалить цитату":
