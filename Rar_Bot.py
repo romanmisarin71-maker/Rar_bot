@@ -131,13 +131,16 @@ def get_chat_members(chat_id: int):
     cursor.close()
     conn.close()
     return rows
-answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хотел?", "Zzz...", "Ау?"]
+answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
 answers_does = ["Жду пока кто то ко мне обратится", "Да ничего... особо... zzz...", "Zzz...", "Перебираю свою музыкальную коллекцию", "Пытаюсь запомнить имена участников... Они все у меня в книжечке записаны!", "Сижу скучаю"]
-last_reply = None
+
+# Словари для вечного отслеживания последних 2 ответов в конкретных чатах
+rar_replies_history = {}
+does_replies_history = {}
 recent_tracks_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_reply, recent_tracks_history
+    global rar_replies_history, does_replies_history, recent_tracks_history
     if not update.message: return
     
     user_id = update.effective_user.id
@@ -148,7 +151,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(chat_id, user_id, username, first_name)
 
     if not is_user_greeted(user_id):
-        hi_text = f"Здравствуйте, {first_name}! Я Rar - ваш универсальный помощник, приятно познакомиться!"
+        hi_text = f"Здравствуйте, {first_name}! Я Rar - ваш универсальный помощник, приятно познакомиться! Я впишу тебя в свою книжку..."
         await update.message.reply_text(hi_text)
         mark_user_as_greeted(user_id)
 
@@ -170,12 +173,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = target_audio.title.strip() if target_audio.title else ""
             track_title = f"{performer} - {title}" if performer and title else (target_audio.file_name or "Неизвестный трек")
             
-            is_new = save_track_to_db(target_audio.file_id, track_title)
+            is_new = save_track_to_db(file_id, track_title)
             if is_new:
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
-                    caption=f" Я занесла этот трек в аудио-архив!\n\nИмя в базе: {track_title}"
+                    caption=f" Я занесла этот трек в коллекцию!\n\nИмя в базе: {track_title}"
                 )
             else:
                 await update.message.reply_text(f" Этот трек уже бережно сохранен в моей коллекции под именем: {track_title}")
@@ -185,14 +188,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         clean = text.lower().strip()
 
+        # ОТВЕТ НА ИМЯ "RAR" С ИСТОРИЕЙ НА 2 ШАГА
         if clean == "rar":
-            available = [a for a in answers_rar if a != last_reply] if last_reply else answers_rar
+            if chat_id not in rar_replies_history:
+                rar_replies_history[chat_id] = []
+                
+            available = [a for a in answers_rar if a not in rar_replies_history[chat_id]]
+            if not available:
+                available = answers_rar
+                
             reply_rar = random.choice(available)
-            last_reply = reply_rar
+            
+            rar_replies_history[chat_id].append(reply_rar)
+            if len(rar_replies_history[chat_id]) > 2:
+                rar_replies_history[chat_id].pop(0)
+                
             await update.message.reply_text(reply_rar)
             return
 
-        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку"]:
+        # ОТВЕТ НА "ЧТО ДЕЛАЕШЬ?" С ИСТОРИЕЙ НА 2 ШАГА
+        elif clean in ["rar, что делаешь?", "рар, что делаешь?", "rar что делаешь?", "рар что делаешь?"]:
+            if chat_id not in does_replies_history:
+                does_replies_history[chat_id] = []
+                
+            available = [a for a in answers_does if a not in does_replies_history[chat_id]]
+            if not available:
+                available = answers_does
+                
+            reply_does = random.choice(available)
+            
+            does_replies_history[chat_id].append(reply_does)
+            if len(does_replies_history[chat_id]) > 2:
+                does_replies_history[chat_id].pop(0)
+                
+            await update.message.reply_text(reply_does)
+            return
+
+        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку", "rar, дай песню", "рар, дай песню", "rar, дай музыку", "рар, дай музыку" ]:
             all_tracks = get_all_tracks_from_db()
             if not all_tracks:
                 await update.message.reply_text("В моей коллекции пока нет ни одной сохранённой песни. Админы, добавьте музыку!")
@@ -213,14 +245,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(recent_tracks_history[chat_id]) > 5:
                 recent_tracks_history[chat_id].pop(0)
 
+            caption_text = f"Вот ваша песня!\n\n*{escape_markdown(track_title)}*"
             await context.bot.send_audio(
                 chat_id=chat_id,
                 audio=file_id,
-                caption=f"Вот ваша песня\!\n\n*{escape_markdown(track_title)}*",
+                caption=caption_text,
                 parse_mode="MarkdownV2"
             )
             return
-        # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ
+        # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ (ГРУППАМИ ПО 6 ЧЕЛОВЕК)
         elif clean == "калл":
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
@@ -233,7 +266,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 saved_members = get_chat_members(chat_id)
                 if not saved_members:
-                    await update.message.reply_text("В базе данных группы пока пусто. Напишите любое слово!")
+                    await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!")
                     return
 
                 members_tags = []
@@ -246,7 +279,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
-                chunk_size = 2
+                chunk_size = 6
                 for i in range(0, len(members_tags), chunk_size):
                     chunk = members_tags[i:i + chunk_size]
                     await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
@@ -254,14 +287,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Ошибка команды калл: {e}")
             return
 
-        # ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ПРОВЕРКА ЧЕРЕЗ БЕЛЫЙ СПИСОК СТАТУСОВ
+        # ПРОВЕРКА ЧЕРЕЗ БЕЛЫЙ СПИСОК СТАТУСОВ
         elif clean == "rar.check":
             status_msg = await update.message.reply_text(" Ищу в своей записной книжке...")
             try:
                 saved_members = get_chat_members(chat_id)
                 left_count = 0
                 
-                # Список «валидных» статусов, при которых пользователь точно в группе
                 valid_statuses = [
                     ChatMemberStatus.MEMBER,
                     ChatMemberStatus.ADMINISTRATOR,
@@ -278,13 +310,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     try:
                         current_status = await context.bot.get_chat_member(chat_id, m_id)
-                        
-                        # Если статус пользователя не входит в белый список — он вышел / кикнут
                         if current_status.status not in valid_statuses:
                             remove_user(chat_id, m_id)
                             left_count += 1
                     except Exception:
-                        # Если аккаунт удален совсем или бот заблокирован пользователем
                         remove_user(chat_id, m_id)
                         left_count += 1
                 
@@ -328,7 +357,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_name = user.first_name or "друг"
         save_user(chat_id, user.id, user.username, user_name)
         if not is_user_greeted(user.id):
-            hi_text = f"Здравствуйте, {user_name}! Я Rar - ваш универсальный помощник, приятно познакомиться!"
+            hi_text = f"Здравствуйте, {user_name}! Я Rar - ваш универсальный помощник, приятно познакомиться! Я впишу тебя в свою книжку..."
             await context.bot.send_message(chat_id=chat_id, text=hi_text)
             mark_user_as_greeted(user.id)
     elif new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
