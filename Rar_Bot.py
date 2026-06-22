@@ -245,7 +245,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={int(m_id)})")
 
-                chunk_size = 1
+                chunk_size = 2
                 for i in range(0, len(members_tags), chunk_size):
                     chunk = members_tags[i:i + chunk_size]
                     await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
@@ -255,7 +255,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ПРОВЕРКА ЧЕРЕЗ БЕЛЫЙ СПИСОК СТАТУСОВ
         elif clean == "rar.check":
-            status_msg = await update.message.reply_text("🔎 Синхронизирую базу данных с участниками чата...")
+            status_msg = await update.message.reply_text(" Ищу в своей записной книжке...")
             try:
                 saved_members = get_chat_members(chat_id)
                 left_count = 0
