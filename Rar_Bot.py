@@ -226,37 +226,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку"]:
-            all_tracks = get_all_tracks_from_db()
-            if not all_tracks:
-                await update.message.reply_text("В моей коллекции пока нет ни одной сохранённой песни. Админы, добавьте музыку!")
-                return
-            
-            if chat_id not in recent_tracks_history:
-                recent_tracks_history[chat_id] = []
+            try:
+                all_tracks = get_all_tracks_from_db()
+                if not all_tracks:
+                    await update.message.reply_text("В моей коллекции пока нет ни одной сохранённой песни. Админы, добавьте музыку!")
+                    return
                 
-            # ИСПРАВЛЕНО: Сравниваем file_id (который лежит в t[0]) со списком истории
-            available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
-            
-            # Если база маленькая и все доступные треки уже в истории, сбрасываем историю чата
-            if not available_tracks:
-                recent_tracks_history[chat_id] = []
-                available_tracks = all_tracks
+                if chat_id not in recent_tracks_history or not isinstance(recent_tracks_history[chat_id], list):
+                    recent_tracks_history[chat_id] = []
+                    
+                # Фильтруем треки: берем строго первый элемент кортежа t[0] (это file_id)
+                available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
                 
-            selected_track = random.choice(available_tracks)
-            file_id, track_title = selected_track
-            
-            # Сохраняем в историю чистый file_id
-            recent_tracks_history[chat_id].append(file_id)
-            if len(recent_tracks_history[chat_id]) > 5:
-                recent_tracks_history[chat_id].pop(0)
+                # Если все треки уже проиграли, сбрасываем историю
+                if not available_tracks:
+                    recent_tracks_history[chat_id] = []
+                    available_tracks = all_tracks
+                    
+                selected_track = random.choice(available_tracks)
+                file_id, track_title = selected_track
+                
+                # Сохраняем в историю чата чистый ID файла
+                recent_tracks_history[chat_id].append(file_id)
+                if len(recent_tracks_history[chat_id]) > 5:
+                    recent_tracks_history[chat_id].pop(0)
 
-            # Убрали капризный MarkdownV2 и звёздочки, теперь код никогда не упадёт из-за знаков препинания
-            caption_text = f"✨ Вот ваша песня!\n\n{track_title}"
-            await context.bot.send_audio(
-                chat_id=chat_id,
-                audio=file_id,
-                caption=caption_text
-            )
+                caption_text = f"✨ Вот ваша песня!\n\n{track_title}"
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=file_id,
+                    caption=caption_text
+                )
+            except Exception as e:
+                # Если внутри блока произойдет любая ошибка, бот честно скажет об этом в чате
+                await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
             return
             
             
