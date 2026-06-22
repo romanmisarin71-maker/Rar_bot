@@ -225,7 +225,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_does)
             return
 
-        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку", "rar, дай песню", "рар, дай песню", "rar, дай музыку", "рар, дай музыку" ]:
+        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку"]:
             all_tracks = get_all_tracks_from_db()
             if not all_tracks:
                 await update.message.reply_text("В моей коллекции пока нет ни одной сохранённой песни. Админы, добавьте музыку!")
@@ -234,7 +234,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if chat_id not in recent_tracks_history:
                 recent_tracks_history[chat_id] = []
                 
+            # ИСПРАВЛЕНО: Сравниваем file_id (который лежит в t[0]) со списком истории
             available_tracks = [t for t in all_tracks if t[0] not in recent_tracks_history[chat_id]]
+            
+            # Если база маленькая и все доступные треки уже в истории, сбрасываем историю чата
             if not available_tracks:
                 recent_tracks_history[chat_id] = []
                 available_tracks = all_tracks
@@ -242,6 +245,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             selected_track = random.choice(available_tracks)
             file_id, track_title = selected_track
             
+            # Сохраняем в историю чистый file_id
             recent_tracks_history[chat_id].append(file_id)
             if len(recent_tracks_history[chat_id]) > 5:
                 recent_tracks_history[chat_id].pop(0)
@@ -254,6 +258,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="MarkdownV2"
             )
             return
+            
         # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ (ГРУППАМИ ПО 6 ЧЕЛОВЕК)
         elif clean == "калл":
             try:
