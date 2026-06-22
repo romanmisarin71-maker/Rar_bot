@@ -179,7 +179,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
-                    caption=f" Я занесла этот трек в коллекцию!\n\nИмя в базе: {track_title}"
+                    caption=f"✨ Я занесла этот трек в коллекцию!\n\nИмя в базе: {track_title}"
                 )
             else:
                 await update.message.reply_text(f" Этот трек уже бережно сохранен в моей коллекции под именем: {track_title}")
@@ -250,14 +250,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(recent_tracks_history[chat_id]) > 5:
                 recent_tracks_history[chat_id].pop(0)
 
-            caption_text = f"Вот ваша песня!\n\n*{escape_markdown(track_title)}*"
+            # Убрали капризный MarkdownV2 и звёздочки, теперь код никогда не упадёт из-за знаков препинания
+            caption_text = f"✨ Вот ваша песня!\n\n{track_title}"
             await context.bot.send_audio(
                 chat_id=chat_id,
                 audio=file_id,
-                caption=caption_text,
-                parse_mode="MarkdownV2"
+                caption=caption_text
             )
             return
+            
             
         # ЧИСТЫЙ БЫСТРЫЙ КАЛЛ (ГРУППАМИ ПО 6 ЧЕЛОВЕК)
         elif clean == "калл":
