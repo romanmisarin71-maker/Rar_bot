@@ -131,6 +131,7 @@ def get_chat_members(chat_id: int):
     cursor.close()
     conn.close()
     return rows
+answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
 answers_does = ["Жду пока кто то ко мне обратится", "Да ничего... особо... zzz...", "Zzz...", "Перебираю свою музыкальную коллекцию", "Пытаюсь запомнить имена участников... Они все у меня в книжечке записаны!", "Сижу скучаю"]
 answers_ref = [
@@ -159,6 +160,7 @@ rar_replies_history = {}
 does_replies_history = {}
 ref_replies_history = {}
 recent_tracks_history = {}
+love_replies_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history
@@ -228,6 +230,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_rar)
             return
 
+        elif clean in ["we.all.love.rar", "we.all.love.rar."]:
+            if chat_id not in love_replies_history:
+                love_replies_history[chat_id] = []
+                
+            available = [a for a in answers_love if a not in love_replies_history[chat_id]]
+            
+            if not available:
+                available = answers_love
+                
+            reply_text = random.choice(available)
+            
+            love_replies_history[chat_id].append(reply_text)
+            
+            if len(love_replies_history[chat_id]) > 2:
+                love_replies_history[chat_id].pop(0)
+                
+            await update.message.reply_text(reply_text)
+            return
+            
+        
         elif clean in ["rar, дай отсылку", "rar дай отсылку", "rar, отсылка", "rar отсылка", "рар, дай отсылку", "рар дай отсылку", "рар, отсылка", "рар отсылка"]:
             if chat_id not in ref_replies_history:
                 ref_replies_history[chat_id] = []
