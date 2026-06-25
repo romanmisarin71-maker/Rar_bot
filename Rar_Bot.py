@@ -133,6 +133,7 @@ def get_chat_members(chat_id: int):
     return rows
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
+answers_hi = ["Привет, как у вас дела?", "Привееет!!!", "Привет, расскажешь что нибудь интересное?", "Привет, песенку хочешь?"]
 answers_does = ["Жду пока кто то ко мне обратится", "Да ничего... особо... zzz...", "Zzz...", "Перебираю свою музыкальную коллекцию", "Пытаюсь запомнить имена участников... Они все у меня в книжечке записаны!", "Сижу скучаю"]
 answers_ref = [
 "Иногда у меня УЛЬТРАШИКАРНОЕ настроение!", "Ваш канал – это ваш холст, берите кисть и окрасьте его красным!!!",
@@ -161,9 +162,10 @@ does_replies_history = {}
 ref_replies_history = {}
 recent_tracks_history = {}
 love_replies_history = {}
+hi_replies_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history
+    global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message: return
     
     user_id = update.effective_user.id
@@ -230,6 +232,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_rar)
             return
 
+        elif clean in ["rar, привет", "rar привет", "рар, привет", "рар привет"]:
+            if chat_id not in hi_replies_history:
+                hi_replies_history[chat_id] = []
+                
+            available = [a for a in answers_hi if a not in hi_replies_history[chat_id]]
+            
+            if not available:
+                available = answers_hi
+                
+            reply_text = random.choice(available)
+            
+            hi_replies_history[chat_id].append(reply_text)
+            
+            if len(hi_replies_history[chat_id]) > 2:
+                hi_replies_history[chat_id].pop(0)
+                
+            await update.message.reply_text(reply_text)
+            return
+            
+
         elif clean in ["we.all.love.rar", "we.all.love.rar."]:
             if chat_id not in love_replies_history:
                 love_replies_history[chat_id] = []
@@ -271,7 +293,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
 
         # ОТВЕТ НА "ЧТО ДЕЛАЕШЬ?" С ИСТОРИЕЙ НА 2 ШАГА
-        elif clean in ["rar, что делаешь?", "рар, что делаешь?", "rar что делаешь?", "рар что делаешь?"]:
+        elif clean in ["rar, что делаешь?", "рар, что делаешь?", "rar что делаешь?", "рар что делаешь?", "rar, что делаешь", "рар, что делаешь", "rar что делаешь", "рар что делаешь"]:
             if chat_id not in does_replies_history:
                 does_replies_history[chat_id] = []
                 
@@ -288,7 +310,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_does)
             return
 
-        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку"]:
+        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку", "rar, дай песню", "рар, дай песню", "rar, дай музыку", "рар, дай музыку"]:
             try:
                 all_tracks = get_all_tracks_from_db()
                 if not all_tracks:
