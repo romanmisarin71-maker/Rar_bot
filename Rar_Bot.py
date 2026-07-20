@@ -164,6 +164,51 @@ recent_tracks_history = {}
 love_replies_history = {}
 hi_replies_history = {}
 
+async def admin_backup_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message: return
+    status_msg = await update.message.reply_text(" Начинаю сбор данных из базы Render PostgreSQL...")
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT chat_id, user_id, username, first_name FROM users")
+        users_rows = cursor.fetchall()
+        cursor.execute("SELECT user_id FROM greeted")
+        greeted_rows = cursor.fetchall()
+        cursor.execute("SELECT file_id, title FROM channel_music")
+        music_rows = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        sql_dump = "-- БЭКАП БАЗЫ ДАННЫХ RAR_BOT\n\n"
+        sql_dump += "-- Таблица: users\n"
+        for row in users_rows:
+            username_val = f"'{row[2].replace(chr(39), chr(39)+chr(39))}'" if row[2] else "NULL"
+            first_name = row[3].replace("'", "''") if row[3] else "друг"
+            sql_dump += f"INSERT INTO users (chat_id, user_id, username, first_name) VALUES ({row[0]}, {row[1]}, {username_val}, '{first_name}') ON CONFLICT (chat_id, user_id) DO NOTHING;\n"
+            
+        sql_dump += "\n-- Таблица: greeted\n"
+        for row in greeted_rows:
+            sql_dump += f"INSERT INTO greeted (user_id) VALUES ({row[0]}) ON CONFLICT (user_id) DO NOTHING;\n"
+            
+        sql_dump += "\n-- Таблица: channel_music\n"
+        for row in music_rows:
+            title = row[1].replace("'", "''") if row[1] else "Неизвестный трек"
+            sql_dump += f"INSERT INTO channel_music (file_id, title) VALUES ('{row[0]}', '{title}') ON CONFLICT (file_id) DO NOTHING;\n"
+            
+        filename = "render_db_backup.sql"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(sql_dump)
+            
+        with open(filename, "rb") as file_to_send:
+            await update.message.reply_document(document=file_to_send, filename=filename, caption="Твой бэкап готов!")
+            
+        await status_msg.delete()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при создании бэкапа: {e}")
+        
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message: return
@@ -486,6 +531,7 @@ def main():
     
     app.add_error_handler(error_handler)
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(MessageHandler(filters.COMMAND & filters.Regex(r"^/backup$"), admin_backup_database))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     
     print("Запуск бота...")
