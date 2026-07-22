@@ -131,6 +131,7 @@ def get_chat_members(chat_id: int):
     cursor.close()
     conn.close()
     return rows
+answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!", "Эээ... монетка встала ребром..."]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
 answers_hi = ["Привет, как у вас дела?", "Привееет!!!", "Привет, расскажешь что нибудь интересное?", "Привет, песенку хочешь?"]
@@ -230,6 +231,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 rar_replies_history[chat_id].pop(0)
                 
             await update.message.reply_text(reply_rar)
+            return
+            
+        elif clean in ["рар, подкинь монетку", "rar, подкинь монетку", "рар подкинь монетку", "rar подкинь монетку", "рар, кинь монетку", "rar, кинь монетку", "рар кинь монетку", "rar кинь монетку", "рар, монетка", "rar, монетка", "рар монетка", "rar монетка"]
+            await update.message.reply_text(random.choice(answers_coin))
             return
 
         elif clean in ["rar, привет", "rar привет", "рар, привет", "рар привет"]:
