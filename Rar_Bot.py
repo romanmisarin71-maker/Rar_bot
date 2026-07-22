@@ -234,6 +234,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         elif clean in ["рар, подкинь монетку", "rar, подкинь монетку", "рар подкинь монетку", "rar подкинь монетку", "рар, кинь монетку", "rar, кинь монетку", "рар кинь монетку", "rar кинь монетку", "рар, монетка", "rar, монетка", "рар монетка", "rar монетка"]:
+            if random.randint(1, 50) == 50:
+                await update.message.reply_text("Эээ... монетка встала ребром...")
+                return
+                
             await update.message.reply_text(random.choice(answers_coin))
             return
 
