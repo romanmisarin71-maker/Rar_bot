@@ -233,7 +233,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(reply_rar)
             return
             
-        elif clean in ["рар, подкинь монетку", "rar, подкинь монетку", "рар подкинь монетку", "rar подкинь монетку", "рар, кинь монетку", "rar, кинь монетку", "рар кинь монетку", "rar кинь монетку", "рар, монетка", "rar, монетка", "рар монетка", "rar монетка"]
+        elif clean in ["рар, подкинь монетку", "rar, подкинь монетку", "рар подкинь монетку", "rar подкинь монетку", "рар, кинь монетку", "rar, кинь монетку", "рар кинь монетку", "rar кинь монетку", "рар, монетка", "rar, монетка", "рар монетка", "rar монетка"]:
             await update.message.reply_text(random.choice(answers_coin))
             return
 
