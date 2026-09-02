@@ -19,7 +19,7 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(dsn=DATABASE_URL)
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
