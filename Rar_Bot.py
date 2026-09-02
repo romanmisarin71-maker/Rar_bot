@@ -1,3 +1,4 @@
+import aiohttp
 import os
 import random
 import re
@@ -394,6 +395,23 @@ async def start_webhook():
 async def on_startup(application: Application):
     asyncio.create_task(start_webhook())
     asyncio.create_task(keep_database_alive())
+    asyncio.create_task(keep_alive(application))
+
+async def keep_alive(app: Application):
+    """Пинг каждые 10 минут чтобы Render не усыпил бота"""
+    await asyncio.sleep(30)  # Подождать запуска
+    port = int(os.environ.get("PORT", 8080))
+    self_url = f"http://localhost:{port}/"
+    
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(self_url, timeout=5) as resp:
+                    print(f"[KEEPALIVE] Self-ping: {resp.status}")
+                await app.bot.get_me()
+            except Exception as e:
+                print(f"[KEEPALIVE] Error: {e}")
+            await asyncio.sleep(600)
 
 def main():
     if not TOKEN or not DATABASE_URL:
