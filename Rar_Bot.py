@@ -3,6 +3,7 @@ import random
 import re
 import asyncio
 import psycopg2
+from urllib.parse import urlparse  # Добавляем стандартный инструмент разбора ссылок
 from aiohttp import web
 from telegram import Update
 from telegram.constants import ChatMemberStatus
@@ -19,7 +20,16 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db_connection():
-    return psycopg2.connect(dsn=DATABASE_URL)
+    # Безопасно разбираем скрытую ссылку из Render на части для psycopg2
+    result = urlparse(DATABASE_URL)
+    return psycopg2.connect(
+        database=result.path[1:],
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port
+    )
+    
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
