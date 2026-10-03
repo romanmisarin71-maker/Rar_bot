@@ -68,8 +68,7 @@ def init_db():
     """)
     conn.commit()
     cursor.close()
-    conn.close()
-# --- МУЗЫКА ---
+    conn.close()# --- МУЗЫКА ---
 
 def save_track_to_db(file_id: str, title: str, added_by: int) -> bool:
     """Возвращает True если трек новый, False если уже есть."""
@@ -238,8 +237,7 @@ def substitute_vars(text: str, user_name: str, chat_title: str) -> str:
     return text
 
 def escape_markdown(text: str) -> str:
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
-# --- ТЕКСТЫ ---
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)# --- ТЕКСТЫ ---
 
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
@@ -289,8 +287,7 @@ FAREWELL_PREFIXES = [
 DELETE_COMMANDS = [
     "рар удали", "рар, удали", "rar удали", "rar, удали",
     "рар удалить", "рар, удалить", "rar удалить", "rar, удалить",
-                                                    ]
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+]async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id >= 0:
         text = (
             "<b>✨ Привет! Я Rar – ваш универсальный помощник.</b>\n\n"
@@ -370,8 +367,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message.text:
         text = update.message.text
-        clean = text.lower().strip()
-# --- РАР КОМАНДЫ ---
+        clean = text.lower().strip()# --- РАР КОМАНДЫ ---
 if clean in ["рар команды", "rar команды", "рар, команды", "rar, команды"]:
     cmd_text = (
         "<b>Список доступных команд Rar:</b>\n\n"
@@ -462,8 +458,7 @@ elif clean in ["рар выкл прощание", "рар, выкл проща�
         return
     update_chat_setting(chat_id, "farewell_enabled", False)
     await update.message.reply_text("❌ Прощание выключено!")
-    return
-# --- ИЗМЕНИТЬ ПРИВЕТСТВИЕ ---
+    return# --- ИЗМЕНИТЬ ПРИВЕТСТВИЕ ---
 elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
     if chat_id >= 0:
         await update.message.reply_text("Эта команда работает только в группах.")
@@ -587,8 +582,7 @@ elif clean in ["rar, что делаешь?", "рар, что делаешь?", 
     does_replies_history[chat_id].append(reply_does)
     if len(does_replies_history[chat_id]) > 2: does_replies_history[chat_id].pop(0)
     await update.message.reply_text(reply_does)
-    return
-# --- ДАЙ ПЕСНЮ ---
+    return# --- ДАЙ ПЕСНЮ ---
 elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку", "rar, дай песню", "рар, дай песню", "rar, дай музыку", "рар, дай музыку"]:
     try:
         all_tracks = get_all_tracks_from_db()
@@ -696,8 +690,7 @@ elif clean.startswith("rar найди ") or clean.startswith("рар найди 
         await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот что нашла у себя в коллекции: {track_title}\n\nЗапрос: {query}")
         return
     else:
-        await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")
-# --- ВХОД / ВЫХОД ИЗ ГРУППЫ ---
+        await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")# --- ВХОД / ВЫХОД ИЗ ГРУППЫ ---
 
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
