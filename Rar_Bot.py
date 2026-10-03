@@ -227,6 +227,20 @@ def substitute_vars(text: str, user_name: str, chat_title: str) -> str:
 def escape_markdown(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
+async def log_to_owner(context, text: str):
+    """Отправляет лог владельцу в ЛС (в Telegram)."""
+    try:
+        owner_id = get_owner_id()
+        if owner_id:
+            safe_text = text.replace("<", "&lt;").replace(">", "&gt;")
+            await context.bot.send_message(
+                chat_id=owner_id,
+                text=f"🔔 <b>LOG</b>\n<code>{safe_text}</code>",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        print(f"[LOG ERROR] {e}")
+
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
@@ -589,7 +603,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             user_ids = get_chat_members(chat_id)
-            print(f"[КАЛЛ] chat_id={chat_id}, user_ids={user_ids}, len={len(user_ids) if user_ids else 0}")
+            await log_to_owner(context, f"[КАЛЛ]\nchat_id={chat_id}\nuser_ids={user_ids}\nlen={len(user_ids) if user_ids else 0}")
             if not user_ids:
                 await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!")
                 return
@@ -662,7 +676,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = result.chat.id
     new_status = result.new_chat_member.status
     old_status = result.old_chat_member.status
-    print(f"[CHAT_MEMBER] chat={chat_id} user={user.id} name={user.first_name} old={old_status} new={new_status}")
+    await log_to_owner(context, f"[CHAT_MEMBER]\nchat={chat_id}\nuser={user.id} name={user.first_name}\nold={old_status}\nnew={new_status}")
     if user.is_bot or chat_id >= 0:
         return
     if user.id == GROUP_ANON_BOT_ID:
@@ -670,7 +684,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         greet_enabled, farewell_enabled, greet_text, farewell_text = get_chat_settings(chat_id)
     except Exception as e:
-        print(f"[CHAT_SETTINGS] Ошибка: {e}")
+        await log_to_owner(context, f"[CHAT_SETTINGS ERROR] {e}")
         return
     try:
         chat = await context.bot.get_chat(chat_id)
@@ -698,14 +712,14 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     chat_id = chat.id
     new_status = result.new_chat_member.status
     old_status = result.old_chat_member.status
-    print(f"[MY_CHAT_MEMBER] chat={chat_id} old={old_status} new={new_status}")
+    await log_to_owner(context, f"[MY_CHAT_MEMBER]\nchat={chat_id}\nold={old_status}\nnew={new_status}")
     if chat_id >= 0:
         return
     if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         try:
             await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
         except Exception as e:
-            print(f"[MY_CHAT_MEMBER] {e}")
+            await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
     elif old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
         text = (
             "Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
@@ -715,7 +729,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
         except Exception as e:
-            print(f"[MY_CHAT_MEMBER] {e}")
+            await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
 
 async def daily_track_loop(app: Application):
     await asyncio.sleep(60)
@@ -757,6 +771,16 @@ async def keep_database_alive():
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"Системное исключение: {context.error}")
+    try:
+        owner_id = get_owner_id()
+        if owner_id:
+            await context.bot.send_message(
+                chat_id=owner_id,
+                text=f"⚠️ <b>ERROR</b>\n<code>{context.error}</code>",
+                parse_mode="HTML"
+            )
+    except Exception:
+        pass
 
 async def handle_http(request):
     return web.Response(text="Бот Rar активен!")
