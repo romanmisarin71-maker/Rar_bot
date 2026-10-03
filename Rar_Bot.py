@@ -570,7 +570,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 selected_track = random.choice(available_tracks)
                 file_id, track_title = selected_track
                 recent_tracks_history[chat_id].append(file_id)
-                if len(recent_tracks_history[chat_id]) > 5: recent_tracks_history[chat_id].pop(0)
+                history_limit = max(5, len(all_tracks) // 3)
+                if len(recent_tracks_history[chat_id]) > history_limit: recent_tracks_history[chat_id].pop(0)
                 await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот ваша песня!\n\n{track_title}")
             except Exception as e:
                 await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
@@ -588,6 +589,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             user_ids = get_chat_members(chat_id)
+            print(f"[КАЛЛ] chat_id={chat_id}, user_ids={user_ids}, len={len(user_ids) if user_ids else 0}")
             if not user_ids:
                 await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!")
                 return
@@ -660,6 +662,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = result.chat.id
     new_status = result.new_chat_member.status
     old_status = result.old_chat_member.status
+    print(f"[CHAT_MEMBER] chat={chat_id} user={user.id} name={user.first_name} old={old_status} new={new_status}")
     if user.is_bot or chat_id >= 0:
         return
     if user.id == GROUP_ANON_BOT_ID:
@@ -695,9 +698,10 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     chat_id = chat.id
     new_status = result.new_chat_member.status
     old_status = result.old_chat_member.status
+    print(f"[MY_CHAT_MEMBER] chat={chat_id} old={old_status} new={new_status}")
     if chat_id >= 0:
         return
-    if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+    if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         try:
             await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
         except Exception as e:
