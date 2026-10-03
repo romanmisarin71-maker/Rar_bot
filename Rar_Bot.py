@@ -19,7 +19,6 @@ from telegram.ext import (
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# ID GroupAnonymousBot — всегда игнорируем
 GROUP_ANON_BOT_ID = 1087968824
 
 def get_db_connection():
@@ -34,7 +33,6 @@ def get_db_connection():
     )
 
 def init_db():
-    """Создаёт таблицы, если их нет (на случай если SQL не был выполнен)."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -68,10 +66,9 @@ def init_db():
     """)
     conn.commit()
     cursor.close()
-    conn.close()# --- МУЗЫКА ---
+    conn.close()
 
 def save_track_to_db(file_id: str, title: str, added_by: int) -> bool:
-    """Возвращает True если трек новый, False если уже есть."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -115,7 +112,6 @@ def get_all_tracks_from_db():
     return rows
 
 def delete_track_from_db(file_id: str):
-    """Удаляет трек по file_id. Возвращает название удалённого трека или None."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT title FROM channel_music WHERE file_id = %s", (file_id,))
@@ -129,8 +125,6 @@ def delete_track_from_db(file_id: str):
     cursor.close()
     conn.close()
     return None
-
-# --- НАСТРОЙКИ ЧАТА ---
 
 def get_chat_settings(chat_id: int):
     conn = get_db_connection()
@@ -159,8 +153,6 @@ def update_chat_setting(chat_id: int, field: str, value):
     conn.commit()
     cursor.close()
     conn.close()
-
-# --- УЧАСТНИКИ ЧАТА ---
 
 def save_user_to_chat(user_id: int, chat_id: int):
     if user_id == GROUP_ANON_BOT_ID:
@@ -202,8 +194,6 @@ def get_chat_members(chat_id: int):
     conn.close()
     return list(row[0]) if row and row[0] else []
 
-# --- СИСТЕМНЫЕ НАСТРОЙКИ ---
-
 def get_system_setting(key: str):
     try:
         conn = get_db_connection()
@@ -229,16 +219,13 @@ def get_notify_chat_id():
     val = get_system_setting("notify_chat_id")
     return int(val) if val else None
 
-# --- УТИЛИТЫ ---
-
 def substitute_vars(text: str, user_name: str, chat_title: str) -> str:
     text = text.replace("%имя%", user_name).replace("%user%", user_name)
     text = text.replace("%чат%", chat_title).replace("%chat%", chat_title)
     return text
 
 def escape_markdown(text: str) -> str:
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)# --- ТЕКСТЫ ---
-
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
@@ -267,10 +254,8 @@ answers_ref = [
 rar_replies_history, does_replies_history, ref_replies_history = {}, {}, {}
 recent_tracks_history, love_replies_history, hi_replies_history = {}, {}, {}
 
-# Кэш участников чата (чтобы не дёргать БД на каждое сообщение)
 saved_users_cache = {}
 
-# Префиксы для команд "измени приветствие/прощание"
 GREET_PREFIXES = [
     "рар измени приветствие", "рар, измени приветствие",
     "rar измени приветствие", "rar, измени приветствие",
@@ -283,11 +268,12 @@ FAREWELL_PREFIXES = [
     "рар изменить прощание", "рар, изменить прощание",
     "rar изменить прощание", "rar, изменить прощание",
 ]
-# Варианты команды удаления (только для владельца)
 DELETE_COMMANDS = [
     "рар удали", "рар, удали", "rar удали", "rar, удали",
     "рар удалить", "рар, удалить", "rar удалить", "rar, удалить",
-]async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+]
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id >= 0:
         text = (
             "<b>✨ Привет! Я Rar – ваш универсальный помощник.</b>\n\n"
@@ -296,7 +282,6 @@ DELETE_COMMANDS = [
             "Чтобы узнать, на что я способна, напишите в чате: <code>Рар команды</code>"
         )
         await update.message.reply_text(text, parse_mode="HTML")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message: return
@@ -307,7 +292,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     username = update.effective_user.username
 
-    # Кэш: сохраняем пользователя только один раз за сессию
     if chat_id < 0:
         cache_key = (user_id, chat_id)
         if cache_key not in saved_users_cache:
@@ -318,7 +302,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text: incoming_text = update.message.text.lower().strip()
     elif update.message.caption: incoming_text = update.message.caption.lower().strip()
 
-    # --- ДОБАВЛЕНИЕ ТРЕКА ---
     if incoming_text in ["добавь", "добавить"]:
         target_audio = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
@@ -334,7 +317,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_new = save_track_to_db(target_audio.file_id, track_title, user_id)
             
             if is_new:
-                # Отправляем трек в группу-хранилище (своим сообщением, без пересылки)
                 storage_chat_id = get_storage_chat_id()
                 if storage_chat_id:
                     try:
@@ -353,7 +335,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception as e:
                         print(f"[STORAGE] Ошибка отправки: {e}")
                 
-                # Ответ в чат пользователю
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
@@ -367,98 +348,98 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message.text:
         text = update.message.text
-        clean = text.lower().strip()# --- РАР КОМАНДЫ ---
-if clean in ["рар команды", "rar команды", "рар, команды", "rar, команды"]:
-    cmd_text = (
-        "<b>Список доступных команд Rar:</b>\n\n"
-        "<b>Музыкальная коллекция:</b>\n"
-        "• <code>добавь</code> / <code>добавить</code> (ответом на аудио) – занести трек в коллекцию\n"
-        "• <code>Рар дай песню</code> – отправить случайную песню\n"
-        "• <code>Рар найди</code> [название] – найти сохранённый трек\n\n"
-        "<b>Настройки чата (только для админов):</b>\n"
-        "• <code>Рар вкл приветствие</code> – включить приветствие новичков\n"
-        "• <code>Рар выкл приветствие</code> – выключить приветствие новичков\n"
-        "• <code>Рар вкл прощание</code> – включить прощание\n"
-        "• <code>Рар выкл прощание</code> – выключить прощание\n"
-        "• <code>Рар измени приветствие</code> [текст] – изменить текст приветствия\n"
-        "• <code>Рар измени прощание</code> [текст] – изменить текст прощания\n\n"
-        "<b>В текстах приветствия и прощания можно использовать:</b>\n"
-        "• <code>%имя%</code> или <code>%user%</code> – имя пользователя\n"
-        "• <code>%чат%</code> или <code>%chat%</code> – название чата\n\n"
-        "<b>Администрирование:</b>\n"
-        "• <code>калл</code> (только для админов, только в группах) – призвать участников тегами по 6 человек\n\n"
-        "<b>Развлечения:</b>\n"
-        "• <code>Рар подкинь монетку</code> – сыграть в орла или решку\n"
-        "• <code>Рар что делаешь</code> – узнать, чем занята Rar\n"
-        "• <code>Rar</code> – проверка работы бота"
-    )
-    await update.message.reply_text(cmd_text, parse_mode="HTML")
-    return
+        clean = text.lower().strip()
 
-# --- ПРИВЕТСТВИЕ / ПРОЩАНИЕ: ВКЛ / ВЫКЛ ---
-elif clean in ["рар вкл приветствие", "рар, вкл приветствие", "rar вкл приветствие", "rar, вкл приветствие"]:
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах.")
-        return
-    try:
-        sender = await context.bot.get_chat_member(chat_id, user_id)
-        if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-            await update.message.reply_text("Прости, но эта команда доступна только админам.")
+        if clean in ["рар команды", "rar команды", "рар, команды", "rar, команды"]:
+            cmd_text = (
+                "<b>Список доступных команд Rar:</b>\n\n"
+                "<b>Музыкальная коллекция:</b>\n"
+                "• <code>добавь</code> / <code>добавить</code> (ответом на аудио) – занести трек в коллекцию\n"
+                "• <code>Рар дай песню</code> – отправить случайную песню\n"
+                "• <code>Рар найди</code> [название] – найти сохранённый трек\n\n"
+                "<b>Настройки чата (только для админов):</b>\n"
+                "• <code>Рар вкл приветствие</code> – включить приветствие новичков\n"
+                "• <code>Рар выкл приветствие</code> – выключить приветствие новичков\n"
+                "• <code>Рар вкл прощание</code> – включить прощание\n"
+                "• <code>Рар выкл прощание</code> – выключить прощание\n"
+                "• <code>Рар измени приветствие</code> [текст] – изменить текст приветствия\n"
+                "• <code>Рар измени прощание</code> [текст] – изменить текст прощания\n\n"
+                "<b>В текстах приветствия и прощания можно использовать:</b>\n"
+                "• <code>%имя%</code> или <code>%user%</code> – имя пользователя\n"
+                "• <code>%чат%</code> или <code>%chat%</code> – название чата\n\n"
+                "<b>Администрирование:</b>\n"
+                "• <code>калл</code> (только для админов, только в группах) – призвать участников тегами по 6 человек\n\n"
+                "<b>Развлечения:</b>\n"
+                "• <code>Рар подкинь монетку</code> – сыграть в орла или решку\n"
+                "• <code>Рар что делаешь</code> – узнать, чем занята Rar\n"
+                "• <code>Rar</code> – проверка работы бота"
+            )
+            await update.message.reply_text(cmd_text, parse_mode="HTML")
             return
-    except Exception:
-        await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
-        return
-    update_chat_setting(chat_id, "greet_enabled", True)
-    await update.message.reply_text("✅ Приветствие новичков включено!")
-    return
 
-elif clean in ["рар выкл приветствие", "рар, выкл приветствие", "rar выкл приветствие", "rar, выкл приветствие"]:
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах.")
-        return
-    try:
-        sender = await context.bot.get_chat_member(chat_id, user_id)
-        if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-            await update.message.reply_text("Прости, но эта команда доступна только админам.")
+        elif clean in ["рар вкл приветствие", "рар, вкл приветствие", "rar вкл приветствие", "rar, вкл приветствие"]:
+            if chat_id >= 0:
+                await update.message.reply_text("Эта команда работает только в группах.")
+                return
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                    return
+            except Exception:
+                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                return
+            update_chat_setting(chat_id, "greet_enabled", True)
+            await update.message.reply_text("✅ Приветствие новичков включено!")
             return
-    except Exception:
-        await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
-        return
-    update_chat_setting(chat_id, "greet_enabled", False)
-    await update.message.reply_text("❌ Приветствие новичков выключено!")
-    return
 
-elif clean in ["рар вкл прощание", "рар, вкл прощание", "rar вкл прощание", "rar, вкл прощание"]:
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах.")
-        return
-    try:
-        sender = await context.bot.get_chat_member(chat_id, user_id)
-        if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-            await update.message.reply_text("Прости, но эта команда доступна только админам.")
+        elif clean in ["рар выкл приветствие", "рар, выкл приветствие", "rar выкл приветствие", "rar, выкл приветствие"]:
+            if chat_id >= 0:
+                await update.message.reply_text("Эта команда работает только в группах.")
+                return
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                    return
+            except Exception:
+                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                return
+            update_chat_setting(chat_id, "greet_enabled", False)
+            await update.message.reply_text("❌ Приветствие новичков выключено!")
             return
-    except Exception:
-        await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
-        return
-    update_chat_setting(chat_id, "farewell_enabled", True)
-    await update.message.reply_text("✅ Прощание включено!")
-    return
 
-elif clean in ["рар выкл прощание", "рар, выкл прощание", "rar выкл прощание", "rar, выкл прощание"]:
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах.")
-        return
-    try:
-        sender = await context.bot.get_chat_member(chat_id, user_id)
-        if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-            await update.message.reply_text("Прости, но эта команда доступна только админам.")
+        elif clean in ["рар вкл прощание", "рар, вкл прощание", "rar вкл прощание", "rar, вкл прощание"]:
+            if chat_id >= 0:
+                await update.message.reply_text("Эта команда работает только в группах.")
+                return
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                    return
+            except Exception:
+                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                return
+            update_chat_setting(chat_id, "farewell_enabled", True)
+            await update.message.reply_text("✅ Прощание включено!")
             return
-    except Exception:
-        await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
-        return
-    update_chat_setting(chat_id, "farewell_enabled", False)
-    await update.message.reply_text("❌ Прощание выключено!")
-    return# --- ИЗМЕНИТЬ ПРИВЕТСТВИЕ ---
+
+        elif clean in ["рар выкл прощание", "рар, выкл прощание", "rar выкл прощание", "rar, выкл прощание"]:
+            if chat_id >= 0:
+                await update.message.reply_text("Эта команда работает только в группах.")
+                return
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                    return
+            except Exception:
+                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                return
+            update_chat_setting(chat_id, "farewell_enabled", False)
+            await update.message.reply_text("❌ Прощание выключено!")
+            return
 elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
     if chat_id >= 0:
         await update.message.reply_text("Эта команда работает только в группах.")
@@ -481,7 +462,6 @@ elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
     await update.message.reply_text(f"✅ Текст приветствия обновлён:\n\n{new_text}")
     return
 
-# --- ИЗМЕНИТЬ ПРОЩАНИЕ ---
 elif any(clean == p or clean.startswith(p + " ") for p in FAREWELL_PREFIXES):
     if chat_id >= 0:
         await update.message.reply_text("Эта команда работает только в группах.")
@@ -504,7 +484,6 @@ elif any(clean == p or clean.startswith(p + " ") for p in FAREWELL_PREFIXES):
     await update.message.reply_text(f"✅ Текст прощания обновлён:\n\n{new_text}")
     return
 
-# --- УДАЛЕНИЕ ТРЕКА (только для владельца, только через reply) ---
 elif clean in DELETE_COMMANDS:
     owner_id = get_owner_id()
     if owner_id is None or user_id != owner_id:
@@ -521,7 +500,6 @@ elif clean in DELETE_COMMANDS:
         await update.message.reply_text("❌ Такого трека нет в моей коллекции.")
     return
 
-# --- RAR / РАР ---
 elif clean in ["rar", "рар"]:
     if chat_id not in rar_replies_history: rar_replies_history[chat_id] = []
     available = [a for a in answers_rar if a not in rar_replies_history[chat_id]]
@@ -532,7 +510,6 @@ elif clean in ["rar", "рар"]:
     await update.message.reply_text(reply_rar)
     return
 
-# --- МОНЕТКА ---
 elif clean in ["рар, подкинь монетку", "rar, подкинь монетку", "рар подкинь монетку", "rar подкинь монетку", "рар, кинь монетку", "rar, кинь монетку", "рар кинь монетку", "rar кинь монетку", "рар, монетка", "rar, монетка", "рар монетка", "rar монетка"]:
     if random.randint(1, 50) == 50:
         await update.message.reply_text("Эээ... монетка встала ребром...")
@@ -540,7 +517,6 @@ elif clean in ["рар, подкинь монетку", "rar, подкинь м�
     await update.message.reply_text(random.choice(answers_coin))
     return
 
-# --- ПРИВЕТ ---
 elif clean in ["rar, привет", "rar привет", "рар, привет", "рар привет"]:
     if chat_id not in hi_replies_history: hi_replies_history[chat_id] = []
     available = [a for a in answers_hi if a not in hi_replies_history[chat_id]]
@@ -551,7 +527,6 @@ elif clean in ["rar, привет", "rar привет", "рар, привет", 
     await update.message.reply_text(reply_text)
     return
 
-# --- WE.ALL.LOVE.RAR ---
 elif clean in ["we.all.love.rar", "we.all.love.rar."]:
     if chat_id not in love_replies_history: love_replies_history[chat_id] = []
     available = [a for a in answers_love if a not in love_replies_history[chat_id]]
@@ -562,7 +537,6 @@ elif clean in ["we.all.love.rar", "we.all.love.rar."]:
     await update.message.reply_text(reply_text)
     return
 
-# --- ОТСЫЛКА ---
 elif clean in ["rar, дай отсылку", "rar дай отсылку", "rar, отсылка", "rar отсылка", "рар, дай отсылку", "рар дай отсылку", "рар, отсылка", "рар отсылка"]:
     if chat_id not in ref_replies_history: ref_replies_history[chat_id] = []
     available = [a for a in answers_ref if a not in ref_replies_history[chat_id]]
@@ -573,7 +547,6 @@ elif clean in ["rar, дай отсылку", "rar дай отсылку", "rar, 
     await update.message.reply_text(reply_text)
     return
 
-# --- ЧТО ДЕЛАЕШЬ ---
 elif clean in ["rar, что делаешь?", "рар, что делаешь?", "rar что делаешь?", "рар что делаешь?", "rar, что делаешь", "рар, что делаешь", "rar что делаешь", "рар что делаешь"]:
     if chat_id not in does_replies_history: does_replies_history[chat_id] = []
     available = [a for a in answers_does if a not in does_replies_history[chat_id]]
@@ -582,7 +555,8 @@ elif clean in ["rar, что делаешь?", "рар, что делаешь?", 
     does_replies_history[chat_id].append(reply_does)
     if len(does_replies_history[chat_id]) > 2: does_replies_history[chat_id].pop(0)
     await update.message.reply_text(reply_does)
-    return# --- ДАЙ ПЕСНЮ ---
+    return
+
 elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку", "rar, дай песню", "рар, дай песню", "rar, дай музыку", "рар, дай музыку"]:
     try:
         all_tracks = get_all_tracks_from_db()
@@ -603,8 +577,6 @@ elif clean in ["rar дай песню", "рар дай песню", "rar дай 
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
     return
-
-# --- КАЛЛ (через БД + актуальные имена из API) ---
 elif clean == "калл":
     if chat_id >= 0:
         await update.message.reply_text("Эта команда доступна только в группах.")
@@ -635,8 +607,7 @@ elif clean == "калл":
     for m_id in user_ids:
         m_id = int(m_id)
         if m_id == int(context.bot.id):
-            continue
-        if m_id == GROUP_ANON_BOT_ID:
+            continue                if m_id == GROUP_ANON_BOT_ID:
             continue
 
         try:
@@ -676,7 +647,6 @@ elif clean == "калл":
         await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
     return
 
-# --- НАЙДИ ---
 elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
     query = text[9:].strip()
     if not query:
@@ -690,8 +660,7 @@ elif clean.startswith("rar найди ") or clean.startswith("рар найди 
         await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот что нашла у себя в коллекции: {track_title}\n\nЗапрос: {query}")
         return
     else:
-        await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")# --- ВХОД / ВЫХОД ИЗ ГРУППЫ ---
-
+        await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
     if not result: return
@@ -719,7 +688,6 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user_name = user.first_name or "друг"
 
-    # ВХОД
     if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
         save_user_to_chat(user.id, chat_id)
         saved_users_cache[(user.id, chat_id)] = True
@@ -727,15 +695,12 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text = substitute_vars(greet_text, user_name, chat_title)
             await context.bot.send_message(chat_id=chat_id, text=text)
 
-    # ВЫХОД
     elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         remove_user_from_chat(user.id, chat_id)
         saved_users_cache.pop((user.id, chat_id), None)
         if farewell_enabled:
             text = substitute_vars(farewell_text, user_name, chat_title)
             await context.bot.send_message(chat_id=chat_id, text=text)
-
-# --- СТАТУС САМОГО БОТА ---
 
 async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.my_chat_member
@@ -748,14 +713,12 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     if chat_id >= 0:
         return
 
-    # Бот стал админом
     if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         try:
             await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
         except Exception as e:
             print(f"[MY_CHAT_MEMBER] {e}")
 
-    # Бот добавлен в группу, но не админ
     elif old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
         text = (
             "Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
@@ -766,8 +729,6 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
             await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
         except Exception as e:
             print(f"[MY_CHAT_MEMBER] {e}")
-
-# --- ЕЖЕДНЕВНЫЙ ТРЕК (keep-alive для Supabase) ---
 
 async def daily_track_loop(app: Application):
     await asyncio.sleep(60)
@@ -792,8 +753,6 @@ async def daily_track_loop(app: Application):
             print(f"[DAILY] Ошибка: {e}")
         await asyncio.sleep(86400)
 
-# --- ПИНГ БД ---
-
 async def keep_database_alive():
     await asyncio.sleep(30)
     while True:
@@ -808,8 +767,6 @@ async def keep_database_alive():
         except Exception as e:
             print(f"=== [PING ERROR] {e} ===")
         await asyncio.sleep(21600)
-
-# --- RENDER HEALTHCHECK ---
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"Системное исключение: {context.error}")
@@ -830,8 +787,6 @@ async def on_startup(application: Application):
     asyncio.create_task(start_webhook())
     asyncio.create_task(keep_database_alive())
     asyncio.create_task(daily_track_loop(application))
-
-# --- MAIN ---
 
 def main():
     if not TOKEN or not DATABASE_URL:
