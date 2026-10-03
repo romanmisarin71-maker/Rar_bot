@@ -226,6 +226,7 @@ def substitute_vars(text: str, user_name: str, chat_title: str) -> str:
 
 def escape_markdown(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
+
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
@@ -282,6 +283,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Чтобы узнать, на что я способна, напишите в чате: <code>Рар команды</code>"
         )
         await update.message.reply_text(text, parse_mode="HTML")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message: return
@@ -435,219 +437,222 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update_chat_setting(chat_id, "farewell_enabled", False)
             await update.message.reply_text("❌ Прощание выключено!")
             return
-elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах.")
-        return
-    try:
-        sender = await context.bot.get_chat_member(chat_id, user_id)
-        if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-            await update.message.reply_text("Прости, но эта команда доступна только админам.")
+
+        elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
+            if chat_id >= 0:
+                await update.message.reply_text("Эта команда работает только в группах.")
+                return
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                    return
+            except Exception:
+                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                return
+            matched = next(p for p in GREET_PREFIXES if clean == p or clean.startswith(p + " "))
+            stripped = text.strip()
+            new_text = stripped[len(matched):].strip()
+            if not new_text:
+                await update.message.reply_text("Нужно написать текст после команды!")
+                return
+            update_chat_setting(chat_id, "greet_text", new_text)
+            await update.message.reply_text(f"✅ Текст приветствия обновлён:\n\n{new_text}")
             return
-    except Exception:
-        await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
-        return
-    matched = next(p for p in GREET_PREFIXES if clean == p or clean.startswith(p + " "))
-    stripped = text.strip()
-    new_text = stripped[len(matched):].strip()
-    if not new_text:
-        await update.message.reply_text("Нужно написать текст после команды!")
-        return
-    update_chat_setting(chat_id, "greet_text", new_text)
-    await update.message.reply_text(f"✅ Текст приветствия обновлён:\n\n{new_text}")
-    return
 
-elif any(clean == p or clean.startswith(p + " ") for p in FAREWELL_PREFIXES):
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах.")
-        return
-    try:
-        sender = await context.bot.get_chat_member(chat_id, user_id)
-        if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-            await update.message.reply_text("Прости, но эта команда доступна только админам.")
+        elif any(clean == p or clean.startswith(p + " ") for p in FAREWELL_PREFIXES):
+            if chat_id >= 0:
+                await update.message.reply_text("Эта команда работает только в группах.")
+                return
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                    return
+            except Exception:
+                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                return
+            matched = next(p for p in FAREWELL_PREFIXES if clean == p or clean.startswith(p + " "))
+            stripped = text.strip()
+            new_text = stripped[len(matched):].strip()
+            if not new_text:
+                await update.message.reply_text("Нужно написать текст после команды!")
+                return
+            update_chat_setting(chat_id, "farewell_text", new_text)
+            await update.message.reply_text(f"✅ Текст прощания обновлён:\n\n{new_text}")
             return
-    except Exception:
-        await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
-        return
-    matched = next(p for p in FAREWELL_PREFIXES if clean == p or clean.startswith(p + " "))
-    stripped = text.strip()
-    new_text = stripped[len(matched):].strip()
-    if not new_text:
-        await update.message.reply_text("Нужно написать текст после команды!")
-        return
-    update_chat_setting(chat_id, "farewell_text", new_text)
-    await update.message.reply_text(f"✅ Текст прощания обновлён:\n\n{new_text}")
-    return
 
-elif clean in DELETE_COMMANDS:
-    owner_id = get_owner_id()
-    if owner_id is None or user_id != owner_id:
-        await update.message.reply_text("Эта команда доступна только моему создателю!")
-        return
-    if not update.message.reply_to_message or not update.message.reply_to_message.audio:
-        await update.message.reply_text("Ответь этой командой на сообщение с треком, который хочешь удалить.")
-        return
-    file_id = update.message.reply_to_message.audio.file_id
-    deleted_title = delete_track_from_db(file_id)
-    if deleted_title:
-        await update.message.reply_text(f"✅ Трек удалён: {deleted_title}")
-    else:
-        await update.message.reply_text("❌ Такого трека нет в моей коллекции.")
-    return
-
-elif clean in ["rar", "рар"]:
-    if chat_id not in rar_replies_history: rar_replies_history[chat_id] = []
-    available = [a for a in answers_rar if a not in rar_replies_history[chat_id]]
-    if not available: available = answers_rar
-    reply_rar = random.choice(available)
-    rar_replies_history[chat_id].append(reply_rar)
-    if len(rar_replies_history[chat_id]) > 2: rar_replies_history[chat_id].pop(0)
-    await update.message.reply_text(reply_rar)
-    return
-
-elif clean in ["рар, подкинь монетку", "rar, подкинь монетку", "рар подкинь монетку", "rar подкинь монетку", "рар, кинь монетку", "rar, кинь монетку", "рар кинь монетку", "rar кинь монетку", "рар, монетка", "rar, монетка", "рар монетка", "rar монетка"]:
-    if random.randint(1, 50) == 50:
-        await update.message.reply_text("Эээ... монетка встала ребром...")
-        return
-    await update.message.reply_text(random.choice(answers_coin))
-    return
-
-elif clean in ["rar, привет", "rar привет", "рар, привет", "рар привет"]:
-    if chat_id not in hi_replies_history: hi_replies_history[chat_id] = []
-    available = [a for a in answers_hi if a not in hi_replies_history[chat_id]]
-    if not available: available = answers_hi
-    reply_text = random.choice(available)
-    hi_replies_history[chat_id].append(reply_text)
-    if len(hi_replies_history[chat_id]) > 2: hi_replies_history[chat_id].pop(0)
-    await update.message.reply_text(reply_text)
-    return
-
-elif clean in ["we.all.love.rar", "we.all.love.rar."]:
-    if chat_id not in love_replies_history: love_replies_history[chat_id] = []
-    available = [a for a in answers_love if a not in love_replies_history[chat_id]]
-    if not available: available = answers_love
-    reply_text = random.choice(available)
-    love_replies_history[chat_id].append(reply_text)
-    if len(love_replies_history[chat_id]) > 2: love_replies_history[chat_id].pop(0)
-    await update.message.reply_text(reply_text)
-    return
-
-elif clean in ["rar, дай отсылку", "rar дай отсылку", "rar, отсылка", "rar отсылка", "рар, дай отсылку", "рар дай отсылку", "рар, отсылка", "рар отсылка"]:
-    if chat_id not in ref_replies_history: ref_replies_history[chat_id] = []
-    available = [a for a in answers_ref if a not in ref_replies_history[chat_id]]
-    if not available: available = answers_ref
-    reply_text = random.choice(available)
-    ref_replies_history[chat_id].append(reply_text)
-    if len(ref_replies_history[chat_id]) > 15: ref_replies_history[chat_id].pop(0)
-    await update.message.reply_text(reply_text)
-    return
-
-elif clean in ["rar, что делаешь?", "рар, что делаешь?", "rar что делаешь?", "рар что делаешь?", "rar, что делаешь", "рар, что делаешь", "rar что делаешь", "рар что делаешь"]:
-    if chat_id not in does_replies_history: does_replies_history[chat_id] = []
-    available = [a for a in answers_does if a not in does_replies_history[chat_id]]
-    if not available: available = answers_does
-    reply_does = random.choice(available)
-    does_replies_history[chat_id].append(reply_does)
-    if len(does_replies_history[chat_id]) > 2: does_replies_history[chat_id].pop(0)
-    await update.message.reply_text(reply_does)
-    return
-
-elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку", "rar, дай песню", "рар, дай песню", "rar, дай музыку", "рар, дай музыку"]:
-    try:
-        all_tracks = get_all_tracks_from_db()
-        if not all_tracks:
-            await update.message.reply_text("В моей коллекции пока нет ни одной сохраненной песни. Админы, добавьте музыку!")
+        elif clean in DELETE_COMMANDS:
+            owner_id = get_owner_id()
+            if owner_id is None or user_id != owner_id:
+                await update.message.reply_text("Эта команда доступна только моему создателю!")
+                return
+            if not update.message.reply_to_message or not update.message.reply_to_message.audio:
+                await update.message.reply_text("Ответь этой командой на сообщение с треком, который хочешь удалить.")
+                return
+            file_id = update.message.reply_to_message.audio.file_id
+            deleted_title = delete_track_from_db(file_id)
+            if deleted_title:
+                await update.message.reply_text(f"✅ Трек удалён: {deleted_title}")
+            else:
+                await update.message.reply_text("❌ Такого трека нет в моей коллекции.")
             return
-        if chat_id not in recent_tracks_history or not isinstance(recent_tracks_history[chat_id], list):
-            recent_tracks_history[chat_id] = []
-        available_tracks = [t for t in all_tracks if t not in recent_tracks_history[chat_id]]
-        if not available_tracks:
-            recent_tracks_history[chat_id] = []
-            available_tracks = all_tracks
-        selected_track = random.choice(available_tracks)
-        file_id, track_title = selected_track
-        recent_tracks_history[chat_id].append(file_id)
-        if len(recent_tracks_history[chat_id]) > 5: recent_tracks_history[chat_id].pop(0)
-        await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот ваша песня!\n\n{track_title}")
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
-    return
-elif clean == "калл":
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда доступна только в группах.")
-        return
-    try:
-        sender = await context.bot.get_chat_member(chat_id, user_id)
-        if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-            await update.message.reply_text("Прости, но калл доступен только админам")
-            return
-    except Exception:
-        pass
-    user_ids = get_chat_members(chat_id)
-    if not user_ids:
-        await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!")
-        return
-    valid_statuses = [
-        ChatMemberStatus.MEMBER,
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.OWNER,
-        ChatMemberStatus.RESTRICTED
-    ]
-    members_tags = []
-    left_count = 0
-    for m_id in user_ids:
-        m_id = int(m_id)
-        if m_id == int(context.bot.id):
-            continue
-        if m_id == GROUP_ANON_BOT_ID:
-            continue
-        try:
-            member = await context.bot.get_chat_member(chat_id, m_id)
-            if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                remove_user_from_chat(m_id, chat_id)
-                saved_users_cache.pop((m_id, chat_id), None)
-                left_count += 1
-                continue
-            if member.status not in valid_statuses:
-                continue
-            m_username = member.user.username
-            m_first_name = member.user.first_name or "друг"
-        except Exception as e:
-            err = str(e).lower()
-            if "not found" in err or "participant" in err:
-                remove_user_from_chat(m_id, chat_id)
-                saved_users_cache.pop((m_id, chat_id), None)
-                left_count += 1
-            continue
-        if m_username:
-            members_tags.append(f"@{escape_markdown(m_username)}")
-        else:
-            members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id})")
-    if not members_tags:
-        await update.message.reply_text("В моей книжке нет активных участников для тега!")
-        return
-    if left_count > 0:
-        await update.message.reply_text(f"👋 Очистил {left_count} вышедших участников из книжки")
-    chunk_size = 6
-    for i in range(0, len(members_tags), chunk_size):
-        chunk = members_tags[i:i + chunk_size]
-        await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
-    return
 
-elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
-    query = text[9:].strip()
-    if not query:
-        await update.message.reply_text("Напиши название песни, например: Rar найди duvet")
-        return
-    status_msg = await update.message.reply_text("🔍 Ищу трек в своей коллекции...")
-    local_track = search_track_in_db(query)
-    if local_track:
-        file_id, track_title = local_track
-        await status_msg.delete()
-        await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот что нашла у себя в коллекции: {track_title}\n\nЗапрос: {query}")
-        return
-    else:
-        await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")
+        elif clean in ["rar", "рар"]:
+            if chat_id not in rar_replies_history: rar_replies_history[chat_id] = []
+            available = [a for a in answers_rar if a not in rar_replies_history[chat_id]]
+            if not available: available = answers_rar
+            reply_rar = random.choice(available)
+            rar_replies_history[chat_id].append(reply_rar)
+            if len(rar_replies_history[chat_id]) > 2: rar_replies_history[chat_id].pop(0)
+            await update.message.reply_text(reply_rar)
+            return
+
+        elif clean in ["рар, подкинь монетку", "rar, подкинь монетку", "рар подкинь монетку", "rar подкинь монетку", "рар, кинь монетку", "rar, кинь монетку", "рар кинь монетку", "rar кинь монетку", "рар, монетка", "rar, монетка", "рар монетка", "rar монетка"]:
+            if random.randint(1, 50) == 50:
+                await update.message.reply_text("Эээ... монетка встала ребром...")
+                return
+            await update.message.reply_text(random.choice(answers_coin))
+            return
+
+        elif clean in ["rar, привет", "rar привет", "рар, привет", "рар привет"]:
+            if chat_id not in hi_replies_history: hi_replies_history[chat_id] = []
+            available = [a for a in answers_hi if a not in hi_replies_history[chat_id]]
+            if not available: available = answers_hi
+            reply_text = random.choice(available)
+            hi_replies_history[chat_id].append(reply_text)
+            if len(hi_replies_history[chat_id]) > 2: hi_replies_history[chat_id].pop(0)
+            await update.message.reply_text(reply_text)
+            return
+
+        elif clean in ["we.all.love.rar", "we.all.love.rar."]:
+            if chat_id not in love_replies_history: love_replies_history[chat_id] = []
+            available = [a for a in answers_love if a not in love_replies_history[chat_id]]
+            if not available: available = answers_love
+            reply_text = random.choice(available)
+            love_replies_history[chat_id].append(reply_text)
+            if len(love_replies_history[chat_id]) > 2: love_replies_history[chat_id].pop(0)
+            await update.message.reply_text(reply_text)
+            return
+
+        elif clean in ["rar, дай отсылку", "rar дай отсылку", "rar, отсылка", "rar отсылка", "рар, дай отсылку", "рар дай отсылку", "рар, отсылка", "рар отсылка"]:
+            if chat_id not in ref_replies_history: ref_replies_history[chat_id] = []
+            available = [a for a in answers_ref if a not in ref_replies_history[chat_id]]
+            if not available: available = answers_ref
+            reply_text = random.choice(available)
+            ref_replies_history[chat_id].append(reply_text)
+            if len(ref_replies_history[chat_id]) > 15: ref_replies_history[chat_id].pop(0)
+            await update.message.reply_text(reply_text)
+            return
+
+        elif clean in ["rar, что делаешь?", "рар, что делаешь?", "rar что делаешь?", "рар что делаешь?", "rar, что делаешь", "рар, что делаешь", "rar что делаешь", "рар что делаешь"]:
+            if chat_id not in does_replies_history: does_replies_history[chat_id] = []
+            available = [a for a in answers_does if a not in does_replies_history[chat_id]]
+            if not available: available = answers_does
+            reply_does = random.choice(available)
+            does_replies_history[chat_id].append(reply_does)
+            if len(does_replies_history[chat_id]) > 2: does_replies_history[chat_id].pop(0)
+            await update.message.reply_text(reply_does)
+            return
+
+        elif clean in ["rar дай песню", "рар дай песню", "rar дай музыку", "рар дай музыку", "rar, дай песню", "рар, дай песню", "rar, дай музыку", "рар, дай музыку"]:
+            try:
+                all_tracks = get_all_tracks_from_db()
+                if not all_tracks:
+                    await update.message.reply_text("В моей коллекции пока нет ни одной сохраненной песни. Админы, добавьте музыку!")
+                    return
+                if chat_id not in recent_tracks_history or not isinstance(recent_tracks_history[chat_id], list):
+                    recent_tracks_history[chat_id] = []
+                available_tracks = [t for t in all_tracks if t not in recent_tracks_history[chat_id]]
+                if not available_tracks:
+                    recent_tracks_history[chat_id] = []
+                    available_tracks = all_tracks
+                selected_track = random.choice(available_tracks)
+                file_id, track_title = selected_track
+                recent_tracks_history[chat_id].append(file_id)
+                if len(recent_tracks_history[chat_id]) > 5: recent_tracks_history[chat_id].pop(0)
+                await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот ваша песня!\n\n{track_title}")
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
+            return
+
+        elif clean == "калл":
+            if chat_id >= 0:
+                await update.message.reply_text("Эта команда доступна только в группах.")
+                return
+            try:
+                sender = await context.bot.get_chat_member(chat_id, user_id)
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                    await update.message.reply_text("Прости, но калл доступен только админам")
+                    return
+            except Exception:
+                pass
+            user_ids = get_chat_members(chat_id)
+            if not user_ids:
+                await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!")
+                return
+            valid_statuses = [
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.OWNER,
+                ChatMemberStatus.RESTRICTED
+            ]
+            members_tags = []
+            left_count = 0
+            for m_id in user_ids:
+                m_id = int(m_id)
+                if m_id == int(context.bot.id):
+                    continue
+                if m_id == GROUP_ANON_BOT_ID:
+                    continue
+                try:
+                    member = await context.bot.get_chat_member(chat_id, m_id)
+                    if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                        remove_user_from_chat(m_id, chat_id)
+                        saved_users_cache.pop((m_id, chat_id), None)
+                        left_count += 1
+                        continue
+                    if member.status not in valid_statuses:
+                        continue
+                    m_username = member.user.username
+                    m_first_name = member.user.first_name or "друг"
+                except Exception as e:
+                    err = str(e).lower()
+                    if "not found" in err or "participant" in err:
+                        remove_user_from_chat(m_id, chat_id)
+                        saved_users_cache.pop((m_id, chat_id), None)
+                        left_count += 1
+                    continue
+                if m_username:
+                    members_tags.append(f"@{escape_markdown(m_username)}")
+                else:
+                    members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id})")
+            if not members_tags:
+                await update.message.reply_text("В моей книжке нет активных участников для тега!")
+                return
+            if left_count > 0:
+                await update.message.reply_text(f"👋 Очистил {left_count} вышедших участников из книжки")
+            chunk_size = 6
+            for i in range(0, len(members_tags), chunk_size):
+                chunk = members_tags[i:i + chunk_size]
+                await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
+            return
+
+        elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
+            query = text[9:].strip()
+            if not query:
+                await update.message.reply_text("Напиши название песни, например: Rar найди duvet")
+                return
+            status_msg = await update.message.reply_text("🔍 Ищу трек в своей коллекции...")
+            local_track = search_track_in_db(query)
+            if local_track:
+                file_id, track_title = local_track
+                await status_msg.delete()
+                await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот что нашла у себя в коллекции: {track_title}\n\nЗапрос: {query}")
+                return
+            else:
+                await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")
+
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
     if not result: return
