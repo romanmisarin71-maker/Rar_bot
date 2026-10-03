@@ -228,7 +228,6 @@ def escape_markdown(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
 async def log_to_owner(context, text: str):
-    """Отправляет лог владельцу в ЛС (в Telegram)."""
     try:
         owner_id = get_owner_id()
         if owner_id:
@@ -346,11 +345,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         print(f"[STORAGE] Ошибка отправки: {e}")
-                await context.bot.send_audio(
-                    chat_id=chat_id,
-                    audio=target_audio.file_id,
-                    caption=f"✨ Я занесла этот трек в коллекцию!\n\nИмя в базе: {track_title}"
-                )
+                try:
+                    await context.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=target_audio.file_id,
+                        caption=f"✨ Я занесла этот трек в коллекцию!\n\nИмя в базе: {track_title}"
+                    )
+                except Exception as e:
+                    print(f"[ADD REPLY] Ошибка: {e}")
             else:
                 await update.message.reply_text(f"Этот трек уже бережно сохранен в моей коллекции под именем: {track_title}")
         else:
@@ -586,7 +588,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 recent_tracks_history[chat_id].append(file_id)
                 history_limit = max(5, len(all_tracks) // 3)
                 if len(recent_tracks_history[chat_id]) > history_limit: recent_tracks_history[chat_id].pop(0)
-                await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот ваша песня!\n\n{track_title}")
+                try:
+                    await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот ваша песня!\n\n{track_title}")
+                except Exception as e:
+                    print(f"[SEND AUDIO] Ошибка: {e}")
             except Exception as e:
                 await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
             return
@@ -651,7 +656,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chunk_size = 6
             for i in range(0, len(members_tags), chunk_size):
                 chunk = members_tags[i:i + chunk_size]
-                await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
+                try:
+                    await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
+                except Exception as e:
+                    print(f"[КАЛЛ SEND] Ошибка: {e}")
             return
 
         elif clean.startswith("rar найди ") or clean.startswith("рар найди "):
@@ -664,7 +672,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if local_track:
                 file_id, track_title = local_track
                 await status_msg.delete()
-                await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот что нашла у себя в коллекции: {track_title}\n\nЗапрос: {query}")
+                try:
+                    await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=f"✨ Вот что нашла у себя в коллекции: {track_title}\n\nЗапрос: {query}")
+                except Exception as e:
+                    print(f"[FIND SEND] Ошибка: {e}")
                 return
             else:
                 await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")
@@ -682,6 +693,12 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id == GROUP_ANON_BOT_ID:
         return
     try:
+        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+        if bot_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+            return
+    except Exception:
+        return
+    try:
         greet_enabled, farewell_enabled, greet_text, farewell_text = get_chat_settings(chat_id)
     except Exception as e:
         await log_to_owner(context, f"[CHAT_SETTINGS ERROR] {e}")
@@ -697,13 +714,19 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         saved_users_cache[(user.id, chat_id)] = True
         if greet_enabled:
             text = substitute_vars(greet_text, user_name, chat_title)
-            await context.bot.send_message(chat_id=chat_id, text=text)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+            except Exception as e:
+                await log_to_owner(context, f"[GREET ERROR] chat={chat_id}\n{e}")
     elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         remove_user_from_chat(user.id, chat_id)
         saved_users_cache.pop((user.id, chat_id), None)
         if farewell_enabled:
             text = substitute_vars(farewell_text, user_name, chat_title)
-            await context.bot.send_message(chat_id=chat_id, text=text)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+            except Exception as e:
+                await log_to_owner(context, f"[FAREWELL ERROR] chat={chat_id}\n{e}")
 
 async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.my_chat_member
@@ -714,6 +737,8 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     old_status = result.old_chat_member.status
     await log_to_owner(context, f"[MY_CHAT_MEMBER]\nchat={chat_id}\nold={old_status}\nnew={new_status}")
     if chat_id >= 0:
+        return
+    if new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         return
     if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         try:
@@ -740,12 +765,15 @@ async def daily_track_loop(app: Application):
                 all_tracks = get_all_tracks_from_db()
                 if all_tracks:
                     file_id, title = random.choice(all_tracks)
-                    await app.bot.send_audio(
-                        chat_id=notify_chat_id,
-                        audio=file_id,
-                        caption=f"🎵 Ежедневный трек:\n{title}"
-                    )
-                    print(f"[DAILY] Отправлено в {notify_chat_id}: {title}")
+                    try:
+                        await app.bot.send_audio(
+                            chat_id=notify_chat_id,
+                            audio=file_id,
+                            caption=f"🎵 Ежедневный трек:\n{title}"
+                        )
+                        print(f"[DAILY] Отправлено в {notify_chat_id}: {title}")
+                    except Exception as e:
+                        print(f"[DAILY SEND] Ошибка: {e}")
                 else:
                     print("[DAILY] Коллекция пуста")
             else:
@@ -774,9 +802,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         owner_id = get_owner_id()
         if owner_id:
+            err_text = str(context.error)
+            if "KICKED" in err_text or "Forbidden" in err_text:
+                print(f"[ERROR HANDLER] Игнорируем KICKED/Forbidden: {err_text}")
+                return
             await context.bot.send_message(
                 chat_id=owner_id,
-                text=f"⚠️ <b>ERROR</b>\n<code>{context.error}</code>",
+                text=f"⚠️ <b>ERROR</b>\n<code>{err_text}</code>",
                 parse_mode="HTML"
             )
     except Exception:
