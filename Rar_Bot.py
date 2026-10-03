@@ -308,14 +308,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_audio = update.message.reply_to_message.audio
         elif update.message.audio:
             target_audio = update.message.audio
-        
         if target_audio:
             performer = target_audio.performer.strip() if target_audio.performer else ""
             title = target_audio.title.strip() if target_audio.title else ""
             track_title = f"{performer} - {title}" if performer and title else (target_audio.file_name or "Неизвестный трек")
-            
             is_new = save_track_to_db(target_audio.file_id, track_title, user_id)
-            
             if is_new:
                 storage_chat_id = get_storage_chat_id()
                 if storage_chat_id:
@@ -326,7 +323,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             storage_caption = track_title
                         if len(storage_caption) > 1020:
                             storage_caption = storage_caption[:1017] + "..."
-                        
                         await context.bot.send_audio(
                             chat_id=storage_chat_id,
                             audio=target_audio.file_id,
@@ -334,7 +330,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except Exception as e:
                         print(f"[STORAGE] Ошибка отправки: {e}")
-                
                 await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=target_audio.file_id,
@@ -440,7 +435,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update_chat_setting(chat_id, "farewell_enabled", False)
             await update.message.reply_text("❌ Прощание выключено!")
             return
-        elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
+elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
     if chat_id >= 0:
         await update.message.reply_text("Эта команда работает только в группах.")
         return
@@ -588,29 +583,24 @@ elif clean == "калл":
             return
     except Exception:
         pass
-
     user_ids = get_chat_members(chat_id)
     if not user_ids:
         await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!")
         return
-
     valid_statuses = [
         ChatMemberStatus.MEMBER,
         ChatMemberStatus.ADMINISTRATOR,
         ChatMemberStatus.OWNER,
         ChatMemberStatus.RESTRICTED
     ]
-
     members_tags = []
     left_count = 0
-
     for m_id in user_ids:
         m_id = int(m_id)
         if m_id == int(context.bot.id):
             continue
         if m_id == GROUP_ANON_BOT_ID:
             continue
-
         try:
             member = await context.bot.get_chat_member(chat_id, m_id)
             if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
@@ -629,19 +619,15 @@ elif clean == "калл":
                 saved_users_cache.pop((m_id, chat_id), None)
                 left_count += 1
             continue
-
         if m_username:
             members_tags.append(f"@{escape_markdown(m_username)}")
         else:
             members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id})")
-
     if not members_tags:
         await update.message.reply_text("В моей книжке нет активных участников для тега!")
         return
-
     if left_count > 0:
         await update.message.reply_text(f"👋 Очистил {left_count} вышедших участников из книжки")
-
     chunk_size = 6
     for i in range(0, len(members_tags), chunk_size):
         chunk = members_tags[i:i + chunk_size]
@@ -669,33 +655,27 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = result.chat.id
     new_status = result.new_chat_member.status
     old_status = result.old_chat_member.status
-
     if user.is_bot or chat_id >= 0:
         return
     if user.id == GROUP_ANON_BOT_ID:
         return
-
     try:
         greet_enabled, farewell_enabled, greet_text, farewell_text = get_chat_settings(chat_id)
     except Exception as e:
         print(f"[CHAT_SETTINGS] Ошибка: {e}")
         return
-
     try:
         chat = await context.bot.get_chat(chat_id)
         chat_title = chat.title or "этот чат"
     except Exception:
         chat_title = "этот чат"
-
     user_name = user.first_name or "друг"
-
     if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
         save_user_to_chat(user.id, chat_id)
         saved_users_cache[(user.id, chat_id)] = True
         if greet_enabled:
             text = substitute_vars(greet_text, user_name, chat_title)
             await context.bot.send_message(chat_id=chat_id, text=text)
-
     elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         remove_user_from_chat(user.id, chat_id)
         saved_users_cache.pop((user.id, chat_id), None)
@@ -710,16 +690,13 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     chat_id = chat.id
     new_status = result.new_chat_member.status
     old_status = result.old_chat_member.status
-
     if chat_id >= 0:
         return
-
     if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         try:
             await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
         except Exception as e:
             print(f"[MY_CHAT_MEMBER] {e}")
-
     elif old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
         text = (
             "Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
