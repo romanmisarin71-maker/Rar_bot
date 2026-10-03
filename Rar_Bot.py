@@ -441,7 +441,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Прощание выключено!")
             return
         elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
-    if chat_id >= 0:
+            if chat_id >= 0:
         await update.message.reply_text("Эта команда работает только в группах.")
         return
     try:
