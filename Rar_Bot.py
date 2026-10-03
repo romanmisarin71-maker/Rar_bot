@@ -226,7 +226,7 @@ def substitute_vars(text: str, user_name: str, chat_title: str) -> str:
 
 def escape_markdown(text: str) -> str:
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
-answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
+    answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
 answers_hi = ["Привет, как у вас дела?", "Привееет!!!", "Привет, расскажешь что нибудь интересное?", "Привет, песенку хочешь?"]
@@ -282,7 +282,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Чтобы узнать, на что я способна, напишите в чате: <code>Рар команды</code>"
         )
         await update.message.reply_text(text, parse_mode="HTML")
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message: return
     if not update.effective_user: return
@@ -440,8 +440,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update_chat_setting(chat_id, "farewell_enabled", False)
             await update.message.reply_text("❌ Прощание выключено!")
             return
-        elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
-            if chat_id >= 0:
+            elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
+    if chat_id >= 0:
         await update.message.reply_text("Эта команда работает только в группах.")
         return
     try:
@@ -607,7 +607,8 @@ elif clean == "калл":
     for m_id in user_ids:
         m_id = int(m_id)
         if m_id == int(context.bot.id):
-            continue                if m_id == GROUP_ANON_BOT_ID:
+            continue
+        if m_id == GROUP_ANON_BOT_ID:
             continue
 
         try:
@@ -661,7 +662,7 @@ elif clean.startswith("rar найди ") or clean.startswith("рар найди 
         return
     else:
         await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")
-async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
     if not result: return
     user = result.new_chat_member.user
