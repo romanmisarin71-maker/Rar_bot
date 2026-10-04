@@ -8,10 +8,13 @@ from collections import OrderedDict
 from html import escape as html_escape
 from urllib.parse import urlparse
 from aiohttp import web
-from telegram import Update
+from telegram import (
+    Update, InlineQueryResultCachedAudio, InlineQueryResultArticle,
+    InputTextMessageContent
+)
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    ChatMemberHandler, filters, ContextTypes
+    Application, CommandHandler, MessageHandler, ChatMemberHandler,
+    InlineQueryHandler, filters, ContextTypes
 )
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -19,7 +22,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 GROUP_ANON_BOT_ID = 1087968824
 SAVED_USERS_CACHE_LIMIT = 2000
 
-# Сырые строки статусов — работают в любой версии PTB
 STATUS_CREATOR = "creator"
 STATUS_ADMINISTRATOR = "administrator"
 STATUS_MEMBER = "member"
@@ -30,7 +32,6 @@ STATUS_BANNED = "banned"
 
 ADMIN_STATUSES = {STATUS_ADMINISTRATOR, STATUS_CREATOR}
 IN_CHAT_STATUSES = {STATUS_MEMBER, STATUS_RESTRICTED, STATUS_ADMINISTRATOR, STATUS_CREATOR}
-OUT_CHAT_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
 LEAVE_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
 
 
@@ -57,14 +58,11 @@ def init_db():
         chat_id BIGINT PRIMARY KEY, user_ids BIGINT[] DEFAULT '{}')""")
     cursor.execute("""CREATE TABLE IF NOT EXISTS system_settings (
         key TEXT PRIMARY KEY, value TEXT)""")
-    conn.commit()
-    cursor.close()
-    conn.close()
+    conn.commit(); cursor.close(); conn.close()
 
 
 def save_track_to_db(file_id, title, added_by):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT title FROM channel_music WHERE file_id = %s OR LOWER(title) = LOWER(%s) LIMIT 1", (file_id, title))
     if cursor.fetchone():
         cursor.close(); conn.close(); return False
@@ -73,24 +71,32 @@ def save_track_to_db(file_id, title, added_by):
 
 
 def search_track_in_db(query):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT 1", (f"%{query.strip().lower()}%",))
-    row = cursor.fetchone()
-    cursor.close(); conn.close(); return row
+    row = cursor.fetchone(); cursor.close(); conn.close(); return row
+
+
+def search_tracks_in_db(query, limit=20):
+    """Поиск всех совпадений — для инлайн-режима."""
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT %s", (f"%{query.strip().lower()}%", limit))
+    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
+
+
+def get_random_tracks_from_db(limit=5):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT file_id, title FROM channel_music ORDER BY RANDOM() LIMIT %s", (limit,))
+    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
 def get_all_tracks_from_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT file_id, title FROM channel_music")
-    rows = cursor.fetchall()
-    cursor.close(); conn.close(); return rows
+    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
 def delete_track_from_db(file_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT title FROM channel_music WHERE file_id = %s", (file_id,))
     row = cursor.fetchone()
     if row:
@@ -100,27 +106,23 @@ def delete_track_from_db(file_id):
 
 
 def get_chat_settings(chat_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("INSERT INTO chat_settings (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (chat_id,))
     conn.commit()
     cursor.execute("SELECT greet_enabled, farewell_enabled, greet_text, farewell_text FROM chat_settings WHERE chat_id = %s", (chat_id,))
-    row = cursor.fetchone()
-    cursor.close(); conn.close()
+    row = cursor.fetchone(); cursor.close(); conn.close()
     return row if row else (True, True, 'Добро пожаловать в %чат%, %имя%', 'Пока пока, %имя%, буду скучать!')
 
 
 def update_chat_setting(chat_id, field, value):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute(f"INSERT INTO chat_settings (chat_id, {field}) VALUES (%s, %s) ON CONFLICT (chat_id) DO UPDATE SET {field} = EXCLUDED.{field}", (chat_id, value))
     conn.commit(); cursor.close(); conn.close()
 
 
 def save_user_to_chat(user_id, chat_id):
     if user_id == GROUP_ANON_BOT_ID: return
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("""INSERT INTO chat_members (chat_id, user_ids) VALUES (%s, ARRAY[%s::BIGINT])
         ON CONFLICT (chat_id) DO UPDATE SET user_ids = (
         SELECT ARRAY(SELECT DISTINCT unnest(chat_members.user_ids || EXCLUDED.user_ids)))""", (chat_id, user_id))
@@ -128,8 +130,7 @@ def save_user_to_chat(user_id, chat_id):
 
 
 def remove_user_from_chat(user_id, chat_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("UPDATE chat_members SET user_ids = array_remove(user_ids, %s::BIGINT) WHERE chat_id = %s", (user_id, chat_id))
     cursor.execute("DELETE FROM chat_members WHERE chat_id = %s AND cardinality(user_ids) = 0", (chat_id,))
     conn.commit(); cursor.close(); conn.close()
@@ -137,8 +138,7 @@ def remove_user_from_chat(user_id, chat_id):
 
 def remove_users_from_chat_batch(user_ids, chat_id):
     if not user_ids: return
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     for uid in user_ids:
         cursor.execute("UPDATE chat_members SET user_ids = array_remove(user_ids, %s::BIGINT) WHERE chat_id = %s", (int(uid), chat_id))
     cursor.execute("DELETE FROM chat_members WHERE chat_id = %s AND cardinality(user_ids) = 0", (chat_id,))
@@ -146,29 +146,25 @@ def remove_users_from_chat_batch(user_ids, chat_id):
 
 
 def remove_chat_data(chat_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("DELETE FROM chat_members WHERE chat_id = %s", (chat_id,))
     cursor.execute("DELETE FROM chat_settings WHERE chat_id = %s", (chat_id,))
     conn.commit(); cursor.close(); conn.close()
 
 
 def get_chat_members(chat_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT user_ids FROM chat_members WHERE chat_id = %s", (chat_id,))
-    row = cursor.fetchone()
-    cursor.close(); conn.close()
+    row = cursor.fetchone(); cursor.close(); conn.close()
     return [int(uid) for uid in row[0]] if row and row[0] else []
 
 
 def get_system_setting(key):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("SELECT value FROM system_settings WHERE key = %s", (key,))
-        row = cursor.fetchone()
-        cursor.close(); conn.close(); return row[0] if row else None
+        row = cursor.fetchone(); cursor.close(); conn.close()
+        return row[0] if row else None
     except Exception as e:
         print(f"[SYSTEM_SETTINGS] Error: {e}"); return None
 
@@ -186,6 +182,13 @@ def get_notify_chat_id():
 def substitute_vars(text, user_name, chat_title):
     text = text.replace("%имя%", user_name).replace("%user%", user_name)
     return text.replace("%чат%", chat_title).replace("%chat%", chat_title)
+
+
+def clean_title(full_title):
+    """Убирает исполнителя: 'Performer - Title' -> 'Title'."""
+    if " - " in full_title:
+        return full_title.split(" - ", 1)[1].strip()
+    return full_title.strip()
 
 
 async def log_to_owner(context, text):
@@ -256,6 +259,67 @@ async def start_command(update, context):
         await update.message.reply_text(text, parse_mode="HTML")
 
 
+async def inline_query_handler(update, context):
+    """Инлайн-режим: @ChRarBot дай песню / найди X / монетка"""
+    query = update.inline_query.query.strip().lower()
+    results = []
+
+    try:
+        if not query or query in ["дай песню", "дай", "песню"]:
+            tracks = get_random_tracks_from_db(limit=5)
+            for i, (fid, title) in enumerate(tracks):
+                results.append(InlineQueryResultCachedAudio(
+                    id=f"rand_{i}_{fid[:20]}",
+                    audio_file_id=fid,
+                    title=clean_title(title),
+                ))
+            await update.inline_query.answer(results, cache_time=10)
+
+        elif query.startswith("найди "):
+            search = query[6:].strip()
+            if not search:
+                await update.inline_query.answer([], cache_time=0); return
+            tracks = search_tracks_in_db(search, limit=20)
+            for i, (fid, title) in enumerate(tracks):
+                results.append(InlineQueryResultCachedAudio(
+                    id=f"find_{i}_{fid[:20]}",
+                    audio_file_id=fid,
+                    title=clean_title(title),
+                ))
+            await update.inline_query.answer(results, cache_time=0)
+
+        elif query.startswith("монетка") or query.startswith("подкинь монетку"):
+            if random.randint(1, 50) == 50:
+                coin_text = "Эээ... монетка встала ребром..."
+            else:
+                coin_text = random.choice(answers_coin)
+            results.append(InlineQueryResultArticle(
+                id="coin",
+                title="🎲 Монетка",
+                description=coin_text,
+                input_message_content=InputTextMessageContent(coin_text)
+            ))
+            await update.inline_query.answer(results, cache_time=0)
+
+        else:
+            # Любой другой текст — ищем как в "найди"
+            tracks = search_tracks_in_db(query, limit=20)
+            for i, (fid, title) in enumerate(tracks):
+                results.append(InlineQueryResultCachedAudio(
+                    id=f"auto_{i}_{fid[:20]}",
+                    audio_file_id=fid,
+                    title=clean_title(title),
+                ))
+            await update.inline_query.answer(results, cache_time=0)
+
+    except Exception as e:
+        await log_to_owner(context, f"[INLINE FATAL] q='{query}'\n{e}\n{traceback.format_exc()[:1200]}")
+        try:
+            await update.inline_query.answer([], cache_time=0)
+        except Exception:
+            pass
+
+
 async def handle_message(update, context):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message or not update.effective_user: return
@@ -319,6 +383,7 @@ async def handle_message(update, context):
             "• <code>Рар измени прощание</code> [текст]\n\n"
             "<b>Переменные в текстах:</b>\n• <code>%имя%</code>/<code>%user%</code> – имя\n• <code>%чат%</code>/<code>%chat%</code> – чат\n\n"
             "<b>Администрирование:</b>\n• <code>калл</code> – тег участников по 6 человек\n\n"
+            "<b>Инлайн-режим:</b>\n• <code>@ChRarBot дай песню</code>\n• <code>@ChRarBot найди</code> [название]\n• <code>@ChRarBot монетка</code>\n\n"
             "<b>Развлечения:</b>\n• <code>Рар подкинь монетку</code>\n• <code>Рар что делаешь</code>\n• <code>Rar</code> – проверка",
             parse_mode="HTML")
         return
@@ -517,8 +582,6 @@ async def handle_message(update, context):
 
             if not tags:
                 await update.message.reply_text("В моей книжке нет активных участников для тега!"); return
-            if len(to_remove) > 0:
-                await update.message.reply_text(f"Очистила {len(to_remove)} вышедших участников из книжки")
 
             for i in range(0, len(tags), 6):
                 chunk = tags[i:i+6]
@@ -714,9 +777,10 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     print("Запуск бота...")
-    app.run_polling(allowed_updates=["message", "chat_member", "my_chat_member"])
+    app.run_polling(allowed_updates=["message", "chat_member", "my_chat_member", "inline_query"])
 
 
 if __name__ == "__main__":
