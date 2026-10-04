@@ -9,7 +9,6 @@ from html import escape as html_escape
 from urllib.parse import urlparse
 from aiohttp import web
 from telegram import Update
-from telegram.constants import ChatMemberStatus
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ChatMemberHandler, filters, ContextTypes
@@ -19,6 +18,20 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GROUP_ANON_BOT_ID = 1087968824
 SAVED_USERS_CACHE_LIMIT = 2000
+
+# Сырые строки статусов — работают в любой версии PTB
+STATUS_CREATOR = "creator"
+STATUS_ADMINISTRATOR = "administrator"
+STATUS_MEMBER = "member"
+STATUS_RESTRICTED = "restricted"
+STATUS_LEFT = "left"
+STATUS_KICKED = "kicked"
+STATUS_BANNED = "banned"
+
+ADMIN_STATUSES = {STATUS_ADMINISTRATOR, STATUS_CREATOR}
+IN_CHAT_STATUSES = {STATUS_MEMBER, STATUS_RESTRICTED, STATUS_ADMINISTRATOR, STATUS_CREATOR}
+OUT_CHAT_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
+LEAVE_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
 
 
 def get_db_connection():
@@ -310,7 +323,6 @@ async def handle_message(update, context):
             parse_mode="HTML")
         return
 
-    # --- вкл/выкл приветствия/прощания ---
     toggle_map = {
         "рар вкл приветствие": ("greet_enabled", True, "Приветствие новичков включено!"),
         "рар, вкл приветствие": ("greet_enabled", True, "Приветствие новичков включено!"),
@@ -334,7 +346,7 @@ async def handle_message(update, context):
             await update.message.reply_text("Эта команда работает только в группах"); return
         try:
             sender = await context.bot.get_chat_member(chat_id, user_id)
-            if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            if sender.status not in ADMIN_STATUSES:
                 await update.message.reply_text("Прости, но эта команда доступна только админам"); return
         except Exception:
             await update.message.reply_text("Не удалось проверить права. Попробуй позже"); return
@@ -342,7 +354,6 @@ async def handle_message(update, context):
         update_chat_setting(chat_id, field, val)
         await update.message.reply_text(msg); return
 
-    # --- измени приветствие/прощание ---
     matched_greet = next((p for p in GREET_PREFIXES if clean == p or clean.startswith(p + " ")), None)
     matched_fare = next((p for p in FAREWELL_PREFIXES if clean == p or clean.startswith(p + " ")), None)
     if matched_greet or matched_fare:
@@ -350,7 +361,7 @@ async def handle_message(update, context):
             await update.message.reply_text("Эта команда работает только в группах"); return
         try:
             sender = await context.bot.get_chat_member(chat_id, user_id)
-            if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            if sender.status not in ADMIN_STATUSES:
                 await update.message.reply_text("Прости, но эта команда доступна только админам"); return
         except Exception:
             await update.message.reply_text("Не удалось проверить права. Попробуй позже"); return
@@ -366,7 +377,6 @@ async def handle_message(update, context):
             await update.message.reply_text(f"Текст прощания обновлён:\n\n{new_text}")
         return
 
-    # --- удали ---
     if clean in DELETE_COMMANDS:
         owner_id = get_owner_id()
         if owner_id is None or user_id != owner_id:
@@ -381,7 +391,6 @@ async def handle_message(update, context):
             await update.message.reply_text("❌ Такого трека нет в моей коллекции")
         return
 
-    # --- развлечения ---
     if clean in ["rar", "рар"]:
         if chat_id not in rar_replies_history: rar_replies_history[chat_id] = []
         avail = [a for a in answers_rar if a not in rar_replies_history[chat_id]] or answers_rar
@@ -427,7 +436,6 @@ async def handle_message(update, context):
         if len(does_replies_history[chat_id]) > 2: does_replies_history[chat_id].pop(0)
         await update.message.reply_text(r); return
 
-    # --- дай песню ---
     if clean in ["rar дай песню","рар дай песню","rar дай музыку","рар дай музыку","rar, дай песню","рар, дай песню","rar, дай музыку","рар, дай музыку"]:
         try:
             tracks = get_all_tracks_from_db()
@@ -449,13 +457,12 @@ async def handle_message(update, context):
             await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
         return
 
-    # --- КАЛЛ ---
     if clean == "калл":
         if chat_id >= 0:
             await update.message.reply_text("Эта команда доступна только в группах"); return
         try:
             sender = await context.bot.get_chat_member(chat_id, user_id)
-            if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            if sender.status not in ADMIN_STATUSES:
                 await update.message.reply_text("Прости, но калл доступен только админам"); return
         except Exception as e:
             await log_to_owner(context, f"[КАЛЛ ADMIN CHECK ERROR] {e}"); return
@@ -473,7 +480,7 @@ async def handle_message(update, context):
             if not user_ids:
                 await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!"); return
 
-            valid = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]
+            valid = [STATUS_MEMBER, STATUS_ADMINISTRATOR, STATUS_CREATOR, STATUS_RESTRICTED]
             tags, to_remove, errors = [], [], []
 
             for m_id in user_ids:
@@ -487,10 +494,10 @@ async def handle_message(update, context):
                         to_remove.append(m_id_int); continue
                     errors.append(f"id={m_id_int}: {str(e)[:80]}"); continue
 
-                if member.status == ChatMemberStatus.LEFT:
+                if member.status == STATUS_LEFT:
                     to_remove.append(m_id_int); continue
-                if member.status == ChatMemberStatus.KICKED:
-                    errors.append(f"id={m_id_int}: skipped (kicked)"); continue
+                if member.status in (STATUS_KICKED, STATUS_BANNED):
+                    errors.append(f"id={m_id_int}: skipped ({member.status})"); continue
                 if member.status not in valid:
                     errors.append(f"id={m_id_int}: status={member.status}"); continue
 
@@ -523,7 +530,6 @@ async def handle_message(update, context):
             await log_to_owner(context, f"[КАЛЛ FATAL] {e}\n{traceback.format_exc()[:1200]}")
         return
 
-    # --- найди ---
     if clean.startswith("rar найди ") or clean.startswith("рар найди "):
         query = text[9:].strip()
         if not query:
@@ -561,7 +567,7 @@ async def handle_chat_member(update, context):
             chat_title = "этот чат"
         user_name = user.first_name or "друг"
 
-        if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
+        if old_status in LEAVE_STATUSES and new_status in IN_CHAT_STATUSES:
             try:
                 save_user_to_chat(user.id, chat_id); cache_user(user.id, chat_id)
             except Exception as e:
@@ -572,7 +578,7 @@ async def handle_chat_member(update, context):
                 except Exception as e:
                     await log_to_owner(context, f"[GREET ERROR] {e}")
 
-        elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+        elif old_status in IN_CHAT_STATUSES and new_status in LEAVE_STATUSES:
             try:
                 remove_user_from_chat(user.id, chat_id); uncache_user(user.id, chat_id)
             except Exception as e:
@@ -597,7 +603,7 @@ async def handle_my_chat_member(update, context):
         await log_to_owner(context, f"[MY_CHAT_MEMBER]\nchat={chat_id}\nold={old_status}\nnew={new_status}")
         if chat_id >= 0: return
 
-        if new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+        if new_status in LEAVE_STATUSES:
             try:
                 remove_chat_data(chat_id)
                 await log_to_owner(context, f"[CLEANUP] Бот покинул чат {chat_id}, данные удалены")
@@ -605,21 +611,21 @@ async def handle_my_chat_member(update, context):
                 await log_to_owner(context, f"[CLEANUP ERROR] chat={chat_id}\n{e}")
             return
 
-        if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+        if old_status not in ADMIN_STATUSES and new_status in ADMIN_STATUSES:
             try:
                 await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
             except Exception as e:
                 await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
             return
 
-        if old_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+        if old_status in ADMIN_STATUSES and new_status not in ADMIN_STATUSES:
             try:
                 await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
             except Exception as e:
                 await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
             return
 
-        if old_status not in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
+        if old_status not in IN_CHAT_STATUSES and new_status in IN_CHAT_STATUSES:
             text = ("Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
                     "Для моей корректной работы в чате предоставьте мне права админа, спасибо!\n\n"
                     "Чтобы узнать, на что я способна, напишите в чате <code>Рар команды</code> после выдачи мне прав.")
