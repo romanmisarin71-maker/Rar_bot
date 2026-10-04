@@ -218,7 +218,6 @@ def remove_users_from_chat_batch(user_ids: list, chat_id: int):
     conn.close()
 
 
-# НОВОЕ: полная очистка данных чата, когда бот его покидает
 def remove_chat_data(chat_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -467,7 +466,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
@@ -483,7 +482,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
@@ -499,7 +498,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
@@ -515,7 +514,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
@@ -531,7 +530,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
@@ -553,7 +552,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
@@ -673,7 +672,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но калл доступен только админам")
                     return
             except Exception as e:
@@ -697,7 +696,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valid_statuses = [
                 ChatMemberStatus.MEMBER,
                 ChatMemberStatus.ADMINISTRATOR,
-                ChatMemberStatus.CREATOR,
+                ChatMemberStatus.OWNER,
                 ChatMemberStatus.RESTRICTED
             ]
             members_tags = []
@@ -806,9 +805,6 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id == GROUP_ANON_BOT_ID:
         return
 
-    # Проверка статуса бота убрана — ложные KICKED блокировали приветствия.
-    # Если бот реально не в чате, send_message упадёт с Forbidden, и мы это увидим в логах.
-
     try:
         greet_enabled, farewell_enabled, greet_text, farewell_text = get_chat_settings(chat_id)
     except Exception as e:
@@ -821,7 +817,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat_title = "этот чат"
     user_name = user.first_name or "друг"
 
-    if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR, ChatMemberStatus.RESTRICTED]:
+    if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
         try:
             save_user_to_chat(user.id, chat_id)
             cache_user(user.id, chat_id)
@@ -834,7 +830,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception as e:
                 await log_to_owner(context, f"[GREET ERROR] {e}")
 
-    elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+    elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         try:
             remove_user_from_chat(user.id, chat_id)
             uncache_user(user.id, chat_id)
@@ -859,7 +855,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     if chat_id >= 0:
         return
 
-    # Бот покинул чат (или его кикнули) — чистим все данные чата из БД
+    # 1. Бот покинул чат (или его кикнули) — чистим все данные чата из БД
     if new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         try:
             remove_chat_data(chat_id)
@@ -868,24 +864,24 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
             await log_to_owner(context, f"[CLEANUP ERROR] chat={chat_id}\n{e}")
         return
 
-    # Бот стал админом (был MEMBER/RESTRICTED или его повысили)
-    if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+    # 2. Бот повышен до админа
+    if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         try:
             await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
         except Exception as e:
             await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
         return
 
-    # Бот понижен с админа до участника
-    if old_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
+    # 3. Бот понижен с админа (в ЛЮБОЙ не-админский статус, включая restricted)
+    if old_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
         try:
             await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
         except Exception as e:
             await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
         return
 
-    # Бот добавлен как участник (не админ) — из любого "не-участника"
-    if old_status not in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
+    # 4. Бот добавлен как участник (не админ) — из любого "не-участника"
+    if old_status not in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
         text = (
             "Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
             "Для моей корректной работы в чате предоставьте мне права админа, спасибо!\n\n"
