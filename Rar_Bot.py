@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from aiohttp import web
 from telegram import (
     Update, InlineQueryResultCachedAudio, InlineQueryResultArticle,
-    InputTextMessageContent
+    InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
@@ -184,7 +184,6 @@ def substitute_vars(text, user_name, chat_title):
 
 
 def clean_title(full_title):
-    """Убирает исполнителя: 'Performer - Title' -> 'Title'."""
     if " - " in full_title:
         return full_title.split(" - ", 1)[1].strip()
     return full_title.strip()
@@ -263,7 +262,8 @@ async def inline_query_handler(update, context):
     results = []
 
     try:
-        if not query or query in ["дай песню", "дай", "песню"]:
+        # 1. Рандомные треки + кнопка "Новый набор"
+        if query in ["дай песню", "песня", "музыка"]:
             tracks = get_random_tracks_from_db(limit=5)
             for i, (fid, title) in enumerate(tracks):
                 results.append(InlineQueryResultCachedAudio(
@@ -271,9 +271,19 @@ async def inline_query_handler(update, context):
                     audio_file_id=fid,
                     caption=clean_title(title),
                 ))
-            await update.inline_query.answer(results, cache_time=10)
+            results.append(InlineQueryResultArticle(
+                id="shuffle",
+                title="🔄 Новый набор песен",
+                description="Показать другие случайные треки",
+                input_message_content=InputTextMessageContent("🔄 Новый набор"),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")
+                ]])
+            ))
+            await update.inline_query.answer(results, cache_time=0)
 
-        elif query.startswith("найди "):
+        # 2. Поиск по "найди X" / "трек X"
+        elif query.startswith("найди ") or query.startswith("трек "):
             search = query[6:].strip()
             if not search:
                 await update.inline_query.answer([], cache_time=0); return
@@ -286,6 +296,7 @@ async def inline_query_handler(update, context):
                 ))
             await update.inline_query.answer(results, cache_time=0)
 
+        # 3. Монетка
         elif query.startswith("монетка") or query.startswith("подкинь монетку"):
             if random.randint(1, 50) == 50:
                 coin_text = "Эээ... монетка встала ребром..."
@@ -298,6 +309,7 @@ async def inline_query_handler(update, context):
             ))
             await update.inline_query.answer(results, cache_time=0)
 
+        # 4. Автопоиск
         else:
             tracks = search_tracks_in_db(query, limit=20)
             for i, (fid, title) in enumerate(tracks):
@@ -368,7 +380,9 @@ async def handle_message(update, context):
     clean = text.lower().strip()
 
     if clean in ["рар команды", "rar команды", "рар, команды", "rar, команды"]:
-        await update.message.reply_text("<b>Список доступных команд Rar:</b>\n\n<b>Музыкальная коллекция:</b>\n"
+        await update.message.reply_text(
+            "<b>Список доступных команд Rar:</b>\n\n"
+            "<b>Музыкальная коллекция:</b>\n"
             "• <code>добавь</code> / <code>добавить</code> (ответом на аудио) – занести трек в коллекцию\n"
             "• <code>Рар дай песню</code> – отправить случайную песню\n"
             "• <code>Рар найди</code> [название] – найти сохранённый трек\n\n"
@@ -377,11 +391,22 @@ async def handle_message(update, context):
             "• <code>Рар вкл прощание</code> / <code>Рар выкл прощание</code>\n"
             "• <code>Рар измени приветствие</code> [текст]\n"
             "• <code>Рар измени прощание</code> [текст]\n\n"
-            "<b>Переменные в текстах:</b>\n• <code>%имя%</code>/<code>%user%</code> – имя\n• <code>%чат%</code>/<code>%chat%</code> – чат\n\n"
-            "<b>Администрирование:</b>\n• <code>калл</code> – тег участников по 6 человек\n\n"
-            "<b>Инлайн-режим:</b>\n• <code>@ChRarBot дай песню</code>\n• <code>@ChRarBot найди</code> [название]\n• <code>@ChRarBot монетка</code>\n\n"
-            "<b>Развлечения:</b>\n• <code>Рар подкинь монетку</code>\n• <code>Рар что делаешь</code>\n• <code>Rar</code> – проверка",
-            parse_mode="HTML")
+            "<b>Переменные в текстах приветствия и прощания:</b>\n"
+            "• <code>%имя%</code> или <code>%user%</code> – имя пользователя\n"
+            "• <code>%чат%</code> или <code>%chat%</code> – название чата\n\n"
+            "<b>Администрирование:</b>\n"
+            "• <code>калл</code> – тег участников по 6 человек (только для админов)\n\n"
+            "<b>Инлайн-режим (работает в любом чате):</b>\n"
+            "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 5 случайных треков + кнопка «Новый набор»\n"
+            "• <code>@ChRarBot найди</code> [название] / <code>трек</code> [название] – поиск по коллекции\n"
+            "• <code>@ChRarBot</code> [любой текст] – автопоиск по названию\n"
+            "• <code>@ChRarBot монетка</code> / <code>подкинь монетку</code> – бросок монетки\n\n"
+            "<b>Развлечения:</b>\n"
+            "• <code>Рар подкинь монетку</code> – сыграть в орла или решку\n"
+            "• <code>Рар что делаешь</code> – узнать, чем занята Rar\n"
+            "• <code>Rar</code> – проверка работы бота",
+            parse_mode="HTML"
+        )
         return
 
     toggle_map = {
