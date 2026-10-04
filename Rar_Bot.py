@@ -77,7 +77,6 @@ def search_track_in_db(query):
 
 
 def search_tracks_in_db(query, limit=20):
-    """Поиск всех совпадений — для инлайн-режима."""
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT %s", (f"%{query.strip().lower()}%", limit))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
@@ -260,7 +259,6 @@ async def start_command(update, context):
 
 
 async def inline_query_handler(update, context):
-    """Инлайн-режим: @ChRarBot дай песню / найди X / монетка"""
     query = update.inline_query.query.strip().lower()
     results = []
 
@@ -271,7 +269,7 @@ async def inline_query_handler(update, context):
                 results.append(InlineQueryResultCachedAudio(
                     id=f"rand_{i}_{fid[:20]}",
                     audio_file_id=fid,
-                    title=clean_title(title),
+                    caption=clean_title(title),
                 ))
             await update.inline_query.answer(results, cache_time=10)
 
@@ -284,7 +282,7 @@ async def inline_query_handler(update, context):
                 results.append(InlineQueryResultCachedAudio(
                     id=f"find_{i}_{fid[:20]}",
                     audio_file_id=fid,
-                    title=clean_title(title),
+                    caption=clean_title(title),
                 ))
             await update.inline_query.answer(results, cache_time=0)
 
@@ -295,20 +293,18 @@ async def inline_query_handler(update, context):
                 coin_text = random.choice(answers_coin)
             results.append(InlineQueryResultArticle(
                 id="coin",
-                title="🎲 Монетка",
-                description=coin_text,
+                title="🎲 Бросить монетку",
                 input_message_content=InputTextMessageContent(coin_text)
             ))
             await update.inline_query.answer(results, cache_time=0)
 
         else:
-            # Любой другой текст — ищем как в "найди"
             tracks = search_tracks_in_db(query, limit=20)
             for i, (fid, title) in enumerate(tracks):
                 results.append(InlineQueryResultCachedAudio(
                     id=f"auto_{i}_{fid[:20]}",
                     audio_file_id=fid,
-                    title=clean_title(title),
+                    caption=clean_title(title),
                 ))
             await update.inline_query.answer(results, cache_time=0)
 
