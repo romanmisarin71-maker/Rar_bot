@@ -160,7 +160,7 @@ def save_user_to_chat(user_id: int, chat_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO chat_members (chat_id, user_ids) VALUES (%s, ARRAY[%s])
+        INSERT INTO chat_members (chat_id, user_ids) VALUES (%s, ARRAY[%s::NUMERIC])
         ON CONFLICT (chat_id) DO UPDATE SET
             user_ids = (
                 SELECT ARRAY(SELECT DISTINCT unnest(chat_members.user_ids || EXCLUDED.user_ids))
@@ -174,7 +174,7 @@ def remove_user_from_chat(user_id: int, chat_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE chat_members SET user_ids = array_remove(user_ids, %s) WHERE chat_id = %s",
+        "UPDATE chat_members SET user_ids = array_remove(user_ids, %s::NUMERIC) WHERE chat_id = %s",
         (user_id, chat_id)
     )
     cursor.execute(
@@ -312,8 +312,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id < 0:
         cache_key = (user_id, chat_id)
         if cache_key not in saved_users_cache:
-            save_user_to_chat(user_id, chat_id)
-            saved_users_cache[cache_key] = True
+            try:
+                save_user_to_chat(user_id, chat_id)
+                saved_users_cache[cache_key] = True
+            except Exception as e:
+                await log_to_owner(context, f"[SAVE USER ERROR] user={user_id} chat={chat_id}\n{e}")
 
     incoming_text = ""
     if update.message.text: incoming_text = update.message.text.lower().strip()
@@ -607,13 +610,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
                     await update.message.reply_text("Прости, но калл доступен только админам")
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                await log_to_owner(context, f"[КАЛЛ ADMIN CHECK ERROR] {e}")
+                return
+
+            # ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА: можем ли получить свой статус?
+            try:
+                test_bot = await context.bot.get_chat_member(chat_id, context.bot.id)
+                if test_bot.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                    await update.message.reply_text("⚠️ Я не в этой группе. Добавь меня обратно.")
+                    await log_to_owner(context, f"[КАЛЛ PRE-CHECK] bot status={test_bot.status}")
+                    return
+                await log_to_owner(context, f"[КАЛЛ PRE-CHECK OK] bot={test_bot.status}")
+            except Exception as e:
+                await update.message.reply_text("⚠️ Telegram временно не отдаёт данные. Попробуй через 10 секунд.")
+                await log_to_owner(context, f"[КАЛЛ PRE-CHECK ERROR] {e}")
+                return
+
             user_ids = get_chat_members(chat_id)
             await log_to_owner(context, f"[КАЛЛ START]\nchat_id={chat_id}\nuser_ids={user_ids}\nlen={len(user_ids) if user_ids else 0}")
             if not user_ids:
                 await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!")
                 return
+
             valid_statuses = [
                 ChatMemberStatus.MEMBER,
                 ChatMemberStatus.ADMINISTRATOR,
@@ -623,43 +642,74 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             members_tags = []
             left_count = 0
             errors = []
+
             for m_id in user_ids:
                 m_id_int = int(m_id)
                 if m_id_int == int(context.bot.id):
                     continue
                 if m_id_int == GROUP_ANON_BOT_ID:
                     continue
+
+                member = None
                 try:
                     member = await context.bot.get_chat_member(chat_id, m_id_int)
-                    if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                        remove_user_from_chat(m_id_int, chat_id)
-                        saved_users_cache.pop((m_id_int, chat_id), None)
-                        left_count += 1
-                        continue
-                    if member.status not in valid_statuses:
-                        errors.append(f"id={m_id_int}: status={member.status}")
-                        continue
-                    m_username = member.user.username
-                    m_first_name = member.user.first_name or "друг"
                 except Exception as e:
-                    err_str = str(e)
-                    errors.append(f"id={m_id_int}: {err_str[:80]}")
-                    err_lower = err_str.lower()
-                    if "not found" in err_lower or "participant" in err_lower:
+                    err_lower = str(e).lower()
+                    # При KICKED/Forbidden — retry через 2 секунды
+                    if "kicked" in err_lower or "forbidden" in err_lower:
+                        await asyncio.sleep(2)
+                        try:
+                            member = await context.bot.get_chat_member(chat_id, m_id_int)
+                        except Exception as e2:
+                            err2_lower = str(e2).lower()
+                            if "kicked" in err2_lower or "forbidden" in err2_lower:
+                                # Всё ещё KICKED — пропускаем БЕЗ удаления
+                                errors.append(f"id={m_id_int}: SKIP (kicked twice)")
+                                continue
+                            elif "not found" in err2_lower or "participant not found" in err2_lower:
+                                remove_user_from_chat(m_id_int, chat_id)
+                                saved_users_cache.pop((m_id_int, chat_id), None)
+                                left_count += 1
+                                continue
+                            else:
+                                errors.append(f"id={m_id_int}: RETRY {str(e2)[:60]}")
+                                continue
+                    elif "not found" in err_lower or "participant not found" in err_lower:
                         remove_user_from_chat(m_id_int, chat_id)
                         saved_users_cache.pop((m_id_int, chat_id), None)
                         left_count += 1
+                        continue
+                    else:
+                        errors.append(f"id={m_id_int}: {str(e)[:80]}")
+                        continue
+
+                if member is None:
                     continue
+
+                # Обрабатываем успешный ответ
+                if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+                    remove_user_from_chat(m_id_int, chat_id)
+                    saved_users_cache.pop((m_id_int, chat_id), None)
+                    left_count += 1
+                    continue
+                if member.status not in valid_statuses:
+                    errors.append(f"id={m_id_int}: status={member.status}")
+                    continue
+
+                m_username = member.user.username
+                m_first_name = member.user.first_name or "друг"
                 if m_username:
                     members_tags.append(f"@{escape_markdown(m_username)}")
                 else:
                     members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id_int})")
+
             await log_to_owner(context, f"[КАЛЛ RESULT]\ntags={len(members_tags)}\nleft={left_count}\nerrors={errors}")
             if not members_tags:
                 await update.message.reply_text("В моей книжке нет активных участников для тега!")
                 return
             if left_count > 0:
                 await update.message.reply_text(f"👋 Очистил {left_count} вышедших участников из книжки")
+
             chunk_size = 6
             for i in range(0, len(members_tags), chunk_size):
                 chunk = members_tags[i:i + chunk_size]
@@ -709,7 +759,6 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     try:
         greet_enabled, farewell_enabled, greet_text, farewell_text = get_chat_settings(chat_id)
-        await log_to_owner(context, f"[SETTINGS]\ngreet={greet_enabled}\nfarewell={farewell_enabled}")
     except Exception as e:
         await log_to_owner(context, f"[CHAT_SETTINGS ERROR] {e}")
         return
@@ -719,27 +768,32 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception:
         chat_title = "этот чат"
     user_name = user.first_name or "друг"
-    await log_to_owner(context, f"[CHECK]\nold={old_status}\nnew={new_status}\ngreet_on={greet_enabled}\nfarewell_on={farewell_enabled}")
+
+    # ВХОД
     if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
-        save_user_to_chat(user.id, chat_id)
-        saved_users_cache[(user.id, chat_id)] = True
+        try:
+            save_user_to_chat(user.id, chat_id)
+            saved_users_cache[(user.id, chat_id)] = True
+        except Exception as e:
+            await log_to_owner(context, f"[SAVE USER ERROR] {e}")
         if greet_enabled:
             text = substitute_vars(greet_text, user_name, chat_title)
-            await log_to_owner(context, f"[TRY GREET] {text}")
             try:
                 await context.bot.send_message(chat_id=chat_id, text=text)
-                await log_to_owner(context, "[GREET OK]")
             except Exception as e:
                 await log_to_owner(context, f"[GREET ERROR] {e}")
+
+    # ВЫХОД
     elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-        remove_user_from_chat(user.id, chat_id)
-        saved_users_cache.pop((user.id, chat_id), None)
+        try:
+            remove_user_from_chat(user.id, chat_id)
+            saved_users_cache.pop((user.id, chat_id), None)
+        except Exception as e:
+            await log_to_owner(context, f"[REMOVE USER ERROR] {e}")
         if farewell_enabled:
             text = substitute_vars(farewell_text, user_name, chat_title)
-            await log_to_owner(context, f"[TRY FAREWELL] {text}")
             try:
                 await context.bot.send_message(chat_id=chat_id, text=text)
-                await log_to_owner(context, "[FAREWELL OK]")
             except Exception as e:
                 await log_to_owner(context, f"[FAREWELL ERROR] {e}")
 
