@@ -22,6 +22,7 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 GROUP_ANON_BOT_ID = 1087968824
 SAVED_USERS_CACHE_LIMIT = 2000
+RAR_LOGO_URL = "https://raw.githubusercontent.com/romanmisarin71-maker/Rar_bot/main/RarFaceBulka.png"
 
 STATUS_CREATOR = "creator"
 STATUS_ADMINISTRATOR = "administrator"
@@ -190,12 +191,9 @@ def clean_title(full_title):
 
 
 def pick_random_with_antirepeat(user_id, limit):
-    """Выбирает случайные треки, исключая те, что пользователь видел за 5 минут."""
     now = time.time()
     seen = inline_seen.get(user_id, {})
-    # Чистим старые
     seen = {fid: ts for fid, ts in seen.items() if now - ts < INLINE_SEEN_TTL}
-    # Обрезаем до лимита
     if len(seen) > INLINE_SEEN_LIMIT:
         sorted_items = sorted(seen.items(), key=lambda x: x[1])
         seen = dict(sorted_items[-INLINE_SEEN_LIMIT:])
@@ -207,7 +205,6 @@ def pick_random_with_antirepeat(user_id, limit):
 
     available = [t for t in all_tracks if t[0] not in seen]
     if len(available) < limit:
-        # Сбрасываем кэш и берём заново
         seen = {}
         available = all_tracks
 
@@ -306,6 +303,7 @@ async def inline_query_handler(update, context):
                 id="shuffle_empty",
                 title="🔄 Новый набор песен",
                 description="Показать другие случайные треки",
+                thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")
@@ -326,6 +324,7 @@ async def inline_query_handler(update, context):
                 id="shuffle",
                 title="🔄 Новый набор песен",
                 description="Показать другие случайные треки",
+                thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")
@@ -333,7 +332,7 @@ async def inline_query_handler(update, context):
             ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 3. Поиск по "найди X" / "трек X" — без антиповтора, без кнопки
+        # 3. Поиск по "найди X" / "трек X"
         elif query.startswith("найди ") or query.startswith("трек "):
             search = query[6:].strip()
             if not search:
@@ -356,11 +355,12 @@ async def inline_query_handler(update, context):
             results.append(InlineQueryResultArticle(
                 id="coin",
                 title="🎲 Бросить монетку",
+                thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent(coin_text)
             ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 5. Автопоиск — без антиповтора, без кнопки
+        # 5. Автопоиск
         else:
             tracks = search_tracks_in_db(query, limit=20)
             for i, (fid, title) in enumerate(tracks):
