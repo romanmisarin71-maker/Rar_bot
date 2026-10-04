@@ -3,6 +3,8 @@ import random
 import re
 import asyncio
 import psycopg2
+from collections import OrderedDict
+from html import escape as html_escape
 from urllib.parse import urlparse
 from aiohttp import web
 from telegram import Update
@@ -20,6 +22,8 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 GROUP_ANON_BOT_ID = 1087968824
+SAVED_USERS_CACHE_LIMIT = 2000
+
 
 def get_db_connection():
     result = urlparse(DATABASE_URL)
@@ -31,6 +35,7 @@ def get_db_connection():
         port=result.port,
         sslmode='require'
     )
+
 
 def init_db():
     conn = get_db_connection()
@@ -68,6 +73,7 @@ def init_db():
     cursor.close()
     conn.close()
 
+
 def save_track_to_db(file_id: str, title: str, added_by: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -89,6 +95,7 @@ def save_track_to_db(file_id: str, title: str, added_by: int) -> bool:
     conn.close()
     return True
 
+
 def search_track_in_db(query: str):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -102,6 +109,7 @@ def search_track_in_db(query: str):
     conn.close()
     return row
 
+
 def get_all_tracks_from_db():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -110,6 +118,7 @@ def get_all_tracks_from_db():
     cursor.close()
     conn.close()
     return rows
+
 
 def delete_track_from_db(file_id: str):
     conn = get_db_connection()
@@ -125,6 +134,7 @@ def delete_track_from_db(file_id: str):
     cursor.close()
     conn.close()
     return None
+
 
 def get_chat_settings(chat_id: int):
     conn = get_db_connection()
@@ -143,6 +153,7 @@ def get_chat_settings(chat_id: int):
     conn.close()
     return row if row else (True, True, 'Добро пожаловать в %чат%, %имя%', 'Пока пока, %имя%, буду скучать!')
 
+
 def update_chat_setting(chat_id: int, field: str, value):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -153,6 +164,7 @@ def update_chat_setting(chat_id: int, field: str, value):
     conn.commit()
     cursor.close()
     conn.close()
+
 
 def save_user_to_chat(user_id: int, chat_id: int):
     if user_id == GROUP_ANON_BOT_ID:
@@ -170,6 +182,7 @@ def save_user_to_chat(user_id: int, chat_id: int):
     cursor.close()
     conn.close()
 
+
 def remove_user_from_chat(user_id: int, chat_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -185,6 +198,37 @@ def remove_user_from_chat(user_id: int, chat_id: int):
     cursor.close()
     conn.close()
 
+
+def remove_users_from_chat_batch(user_ids: list, chat_id: int):
+    if not user_ids:
+        return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    for uid in user_ids:
+        cursor.execute(
+            "UPDATE chat_members SET user_ids = array_remove(user_ids, %s::NUMERIC) WHERE chat_id = %s",
+            (uid, chat_id)
+        )
+    cursor.execute(
+        "DELETE FROM chat_members WHERE chat_id = %s AND cardinality(user_ids) = 0",
+        (chat_id,)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+# НОВОЕ: полная очистка данных чата, когда бот его покидает
+def remove_chat_data(chat_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM chat_members WHERE chat_id = %s", (chat_id,))
+    cursor.execute("DELETE FROM chat_settings WHERE chat_id = %s", (chat_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
 def get_chat_members(chat_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -193,6 +237,7 @@ def get_chat_members(chat_id: int):
     cursor.close()
     conn.close()
     return list(row[0]) if row and row[0] else []
+
 
 def get_system_setting(key: str):
     try:
@@ -207,25 +252,27 @@ def get_system_setting(key: str):
         print(f"[SYSTEM_SETTINGS] Error: {e}")
         return None
 
+
 def get_owner_id():
     val = get_system_setting("owner_id")
     return int(val) if val else None
+
 
 def get_storage_chat_id():
     val = get_system_setting("storage_chat_id")
     return int(val) if val else None
 
+
 def get_notify_chat_id():
     val = get_system_setting("notify_chat_id")
     return int(val) if val else None
+
 
 def substitute_vars(text: str, user_name: str, chat_title: str) -> str:
     text = text.replace("%имя%", user_name).replace("%user%", user_name)
     text = text.replace("%чат%", chat_title).replace("%chat%", chat_title)
     return text
 
-def escape_markdown(text: str) -> str:
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
 async def log_to_owner(context, text: str):
     try:
@@ -241,6 +288,24 @@ async def log_to_owner(context, text: str):
             )
     except Exception as e:
         print(f"[LOG ERROR] {e}")
+
+
+def cache_user(user_id: int, chat_id: int):
+    key = (user_id, chat_id)
+    if key in saved_users_cache:
+        saved_users_cache.move_to_end(key)
+    saved_users_cache[key] = True
+    if len(saved_users_cache) > SAVED_USERS_CACHE_LIMIT:
+        saved_users_cache.popitem(last=False)
+
+
+def uncache_user(user_id: int, chat_id: int):
+    saved_users_cache.pop((user_id, chat_id), None)
+
+
+def is_user_cached(user_id: int, chat_id: int) -> bool:
+    return (user_id, chat_id) in saved_users_cache
+
 
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
@@ -270,7 +335,7 @@ answers_ref = [
 rar_replies_history, does_replies_history, ref_replies_history = {}, {}, {}
 recent_tracks_history, love_replies_history, hi_replies_history = {}, {}, {}
 
-saved_users_cache = {}
+saved_users_cache = OrderedDict()
 
 GREET_PREFIXES = [
     "рар измени приветствие", "рар, измени приветствие",
@@ -289,6 +354,7 @@ DELETE_COMMANDS = [
     "рар удалить", "рар, удалить", "rar удалить", "rar, удалить",
 ]
 
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id >= 0:
         text = (
@@ -298,6 +364,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Чтобы узнать, на что я способна, напишите в чате: <code>Рар команды</code>"
         )
         await update.message.reply_text(text, parse_mode="HTML")
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
@@ -310,11 +377,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
 
     if chat_id < 0:
-        cache_key = (user_id, chat_id)
-        if cache_key not in saved_users_cache:
+        if not is_user_cached(user_id, chat_id):
             try:
                 save_user_to_chat(user_id, chat_id)
-                saved_users_cache[cache_key] = True
+                cache_user(user_id, chat_id)
             except Exception as e:
                 await log_to_owner(context, f"[SAVE USER ERROR] user={user_id} chat={chat_id}\n{e}")
 
@@ -397,79 +463,79 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif clean in ["рар вкл приветствие", "рар, вкл приветствие", "rar вкл приветствие", "rar, вкл приветствие"]:
             if chat_id >= 0:
-                await update.message.reply_text("Эта команда работает только в группах.")
+                await update.message.reply_text("Эта команда работает только в группах")
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
-                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                await update.message.reply_text("Не удалось проверить права. Попробуй позже")
                 return
             update_chat_setting(chat_id, "greet_enabled", True)
-            await update.message.reply_text("✅ Приветствие новичков включено!")
+            await update.message.reply_text("Приветствие новичков включено!")
             return
 
         elif clean in ["рар выкл приветствие", "рар, выкл приветствие", "rar выкл приветствие", "rar, выкл приветствие"]:
             if chat_id >= 0:
-                await update.message.reply_text("Эта команда работает только в группах.")
+                await update.message.reply_text("Эта команда работает только в группах")
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
-                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                await update.message.reply_text("Не удалось проверить права. Попробуй позже")
                 return
             update_chat_setting(chat_id, "greet_enabled", False)
-            await update.message.reply_text("❌ Приветствие новичков выключено!")
+            await update.message.reply_text("Приветствие новичков выключено!")
             return
 
         elif clean in ["рар вкл прощание", "рар, вкл прощание", "rar вкл прощание", "rar, вкл прощание"]:
             if chat_id >= 0:
-                await update.message.reply_text("Эта команда работает только в группах.")
+                await update.message.reply_text("Эта команда работает только в группах")
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
-                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                await update.message.reply_text("Не удалось проверить права. Попробуй позже")
                 return
             update_chat_setting(chat_id, "farewell_enabled", True)
-            await update.message.reply_text("✅ Прощание включено!")
+            await update.message.reply_text("Прощание включено!")
             return
 
         elif clean in ["рар выкл прощание", "рар, выкл прощание", "rar выкл прощание", "rar, выкл прощание"]:
             if chat_id >= 0:
-                await update.message.reply_text("Эта команда работает только в группах.")
+                await update.message.reply_text("Эта команда работает только в группах")
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
-                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                await update.message.reply_text("Не удалось проверить права. Попробуй позже")
                 return
             update_chat_setting(chat_id, "farewell_enabled", False)
-            await update.message.reply_text("❌ Прощание выключено!")
+            await update.message.reply_text("Прощание выключено!")
             return
 
         elif any(clean == p or clean.startswith(p + " ") for p in GREET_PREFIXES):
             if chat_id >= 0:
-                await update.message.reply_text("Эта команда работает только в группах.")
+                await update.message.reply_text("Эта команда работает только в группах")
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
-                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                await update.message.reply_text("Не удалось проверить права. Попробуй позже")
                 return
             matched = next(p for p in GREET_PREFIXES if clean == p or clean.startswith(p + " "))
             stripped = text.strip()
@@ -478,20 +544,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Нужно написать текст после команды!")
                 return
             update_chat_setting(chat_id, "greet_text", new_text)
-            await update.message.reply_text(f"✅ Текст приветствия обновлён:\n\n{new_text}")
+            await update.message.reply_text(f"Текст приветствия обновлён:\n\n{new_text}")
             return
 
         elif any(clean == p or clean.startswith(p + " ") for p in FAREWELL_PREFIXES):
             if chat_id >= 0:
-                await update.message.reply_text("Эта команда работает только в группах.")
+                await update.message.reply_text("Эта команда работает только в группах")
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-                    await update.message.reply_text("Прости, но эта команда доступна только админам.")
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+                    await update.message.reply_text("Прости, но эта команда доступна только админам")
                     return
             except Exception:
-                await update.message.reply_text("⚠️ Не удалось проверить права. Попробуй позже.")
+                await update.message.reply_text("Не удалось проверить права. Попробуй позже")
                 return
             matched = next(p for p in FAREWELL_PREFIXES if clean == p or clean.startswith(p + " "))
             stripped = text.strip()
@@ -500,7 +566,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Нужно написать текст после команды!")
                 return
             update_chat_setting(chat_id, "farewell_text", new_text)
-            await update.message.reply_text(f"✅ Текст прощания обновлён:\n\n{new_text}")
+            await update.message.reply_text(f"Текст прощания обновлён:\n\n{new_text}")
             return
 
         elif clean in DELETE_COMMANDS:
@@ -509,14 +575,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Эта команда доступна только моему создателю!")
                 return
             if not update.message.reply_to_message or not update.message.reply_to_message.audio:
-                await update.message.reply_text("Ответь этой командой на сообщение с треком, который хочешь удалить.")
+                await update.message.reply_text("Ответь этой командой на сообщение с треком, который хочешь удалить")
                 return
             file_id = update.message.reply_to_message.audio.file_id
             deleted_title = delete_track_from_db(file_id)
             if deleted_title:
                 await update.message.reply_text(f"✅ Трек удалён: {deleted_title}")
             else:
-                await update.message.reply_text("❌ Такого трека нет в моей коллекции.")
+                await update.message.reply_text("❌ Такого трека нет в моей коллекции")
             return
 
         elif clean in ["rar", "рар"]:
@@ -603,27 +669,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif clean == "калл":
             if chat_id >= 0:
-                await update.message.reply_text("Эта команда доступна только в группах.")
+                await update.message.reply_text("Эта команда доступна только в группах")
                 return
             try:
                 sender = await context.bot.get_chat_member(chat_id, user_id)
-                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                if sender.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
                     await update.message.reply_text("Прости, но калл доступен только админам")
                     return
             except Exception as e:
                 await log_to_owner(context, f"[КАЛЛ ADMIN CHECK ERROR] {e}")
                 return
 
-            # ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА: можем ли получить свой статус?
             try:
-                test_bot = await context.bot.get_chat_member(chat_id, context.bot.id)
-                if test_bot.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                    await update.message.reply_text("⚠️ Я не в этой группе. Добавь меня обратно.")
-                    await log_to_owner(context, f"[КАЛЛ PRE-CHECK] bot status={test_bot.status}")
-                    return
-                await log_to_owner(context, f"[КАЛЛ PRE-CHECK OK] bot={test_bot.status}")
+                chat_info = await context.bot.get_chat(chat_id)
+                await log_to_owner(context, f"[КАЛЛ PRE-CHECK OK] chat={chat_info.title}")
             except Exception as e:
-                await update.message.reply_text("⚠️ Telegram временно не отдаёт данные. Попробуй через 10 секунд.")
+                await update.message.reply_text("Не удалось получить данные о чате. Попробуй позже")
                 await log_to_owner(context, f"[КАЛЛ PRE-CHECK ERROR] {e}")
                 return
 
@@ -636,11 +697,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valid_statuses = [
                 ChatMemberStatus.MEMBER,
                 ChatMemberStatus.ADMINISTRATOR,
-                ChatMemberStatus.OWNER,
+                ChatMemberStatus.CREATOR,
                 ChatMemberStatus.RESTRICTED
             ]
             members_tags = []
-            left_count = 0
+            to_remove = []
             errors = []
 
             for m_id in user_ids:
@@ -655,29 +716,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     member = await context.bot.get_chat_member(chat_id, m_id_int)
                 except Exception as e:
                     err_lower = str(e).lower()
-                    # При KICKED/Forbidden — retry через 2 секунды
-                    if "kicked" in err_lower or "forbidden" in err_lower:
-                        await asyncio.sleep(2)
-                        try:
-                            member = await context.bot.get_chat_member(chat_id, m_id_int)
-                        except Exception as e2:
-                            err2_lower = str(e2).lower()
-                            if "kicked" in err2_lower or "forbidden" in err2_lower:
-                                # Всё ещё KICKED — пропускаем БЕЗ удаления
-                                errors.append(f"id={m_id_int}: SKIP (kicked twice)")
-                                continue
-                            elif "not found" in err2_lower or "participant not found" in err2_lower:
-                                remove_user_from_chat(m_id_int, chat_id)
-                                saved_users_cache.pop((m_id_int, chat_id), None)
-                                left_count += 1
-                                continue
-                            else:
-                                errors.append(f"id={m_id_int}: RETRY {str(e2)[:60]}")
-                                continue
-                    elif "not found" in err_lower or "participant not found" in err_lower:
-                        remove_user_from_chat(m_id_int, chat_id)
-                        saved_users_cache.pop((m_id_int, chat_id), None)
-                        left_count += 1
+                    if "not found" in err_lower or "participant not found" in err_lower:
+                        to_remove.append(m_id_int)
                         continue
                     else:
                         errors.append(f"id={m_id_int}: {str(e)[:80]}")
@@ -686,35 +726,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if member is None:
                     continue
 
-                # Обрабатываем успешный ответ
-                if member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-                    remove_user_from_chat(m_id_int, chat_id)
-                    saved_users_cache.pop((m_id_int, chat_id), None)
-                    left_count += 1
+                if member.status == ChatMemberStatus.LEFT:
+                    to_remove.append(m_id_int)
                     continue
+
+                if member.status == ChatMemberStatus.KICKED:
+                    errors.append(f"id={m_id_int}: skipped (kicked)")
+                    continue
+
                 if member.status not in valid_statuses:
                     errors.append(f"id={m_id_int}: status={member.status}")
                     continue
 
                 m_username = member.user.username
                 m_first_name = member.user.first_name or "друг"
-                if m_username:
-                    members_tags.append(f"@{escape_markdown(m_username)}")
-                else:
-                    members_tags.append(f"[{escape_markdown(m_first_name)}](tg://user?id={m_id_int})")
+                display = f"@{m_username}" if m_username else m_first_name
+                members_tags.append(
+                    f'<a href="tg://user?id={m_id_int}">{html_escape(display)}</a>'
+                )
 
-            await log_to_owner(context, f"[КАЛЛ RESULT]\ntags={len(members_tags)}\nleft={left_count}\nerrors={errors}")
+            if to_remove:
+                try:
+                    remove_users_from_chat_batch(to_remove, chat_id)
+                    for uid in to_remove:
+                        uncache_user(uid, chat_id)
+                except Exception as e:
+                    await log_to_owner(context, f"[КАЛЛ BATCH REMOVE ERROR] {e}")
+
+            await log_to_owner(context, f"[КАЛЛ RESULT]\ntags={len(members_tags)}\nleft={len(to_remove)}\nerrors={errors}")
+
             if not members_tags:
                 await update.message.reply_text("В моей книжке нет активных участников для тега!")
                 return
-            if left_count > 0:
-                await update.message.reply_text(f"👋 Очистил {left_count} вышедших участников из книжки")
+
+            if len(to_remove) > 0:
+                await update.message.reply_text(f"Очистила {len(to_remove)} вышедших участников из книжки")
 
             chunk_size = 6
             for i in range(0, len(members_tags), chunk_size):
                 chunk = members_tags[i:i + chunk_size]
                 try:
-                    await update.message.reply_text("*Минуточку внимания\\!\\!\\!*\n\n" + "\n".join(chunk), parse_mode="MarkdownV2")
+                    await update.message.reply_text(
+                        "<b>Минуточку внимания!!!</b>\n\n" + "\n".join(chunk),
+                        parse_mode="HTML"
+                    )
                 except Exception as e:
                     await log_to_owner(context, f"[КАЛЛ SEND ERROR] {e}")
             return
@@ -724,7 +779,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not query:
                 await update.message.reply_text("Напиши название песни, например: Rar найди duvet")
                 return
-            status_msg = await update.message.reply_text("🔍 Ищу трек в своей коллекции...")
+            status_msg = await update.message.reply_text("Ищу трек в своей коллекции...")
             local_track = search_track_in_db(query)
             if local_track:
                 file_id, track_title = local_track
@@ -735,7 +790,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     print(f"[FIND SEND] Ошибка: {e}")
                 return
             else:
-                await status_msg.edit_text("❌ К сожалению, такой песни в моей коллекции пока нет.")
+                await status_msg.edit_text("К сожалению, такой песни в моей коллекции пока нет")
+
 
 async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
@@ -749,14 +805,10 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if user.id == GROUP_ANON_BOT_ID:
         return
-    try:
-        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-        await log_to_owner(context, f"[BOT STATUS] {bot_member.status}")
-        if bot_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
-            return
-    except Exception as e:
-        await log_to_owner(context, f"[BOT STATUS ERROR] {e}")
-        return
+
+    # Проверка статуса бота убрана — ложные KICKED блокировали приветствия.
+    # Если бот реально не в чате, send_message упадёт с Forbidden, и мы это увидим в логах.
+
     try:
         greet_enabled, farewell_enabled, greet_text, farewell_text = get_chat_settings(chat_id)
     except Exception as e:
@@ -769,11 +821,10 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat_title = "этот чат"
     user_name = user.first_name or "друг"
 
-    # ВХОД
-    if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED]:
+    if old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR, ChatMemberStatus.RESTRICTED]:
         try:
             save_user_to_chat(user.id, chat_id)
-            saved_users_cache[(user.id, chat_id)] = True
+            cache_user(user.id, chat_id)
         except Exception as e:
             await log_to_owner(context, f"[SAVE USER ERROR] {e}")
         if greet_enabled:
@@ -783,11 +834,10 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception as e:
                 await log_to_owner(context, f"[GREET ERROR] {e}")
 
-    # ВЫХОД
-    elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+    elif old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR, ChatMemberStatus.RESTRICTED] and new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
         try:
             remove_user_from_chat(user.id, chat_id)
-            saved_users_cache.pop((user.id, chat_id), None)
+            uncache_user(user.id, chat_id)
         except Exception as e:
             await log_to_owner(context, f"[REMOVE USER ERROR] {e}")
         if farewell_enabled:
@@ -796,6 +846,7 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await context.bot.send_message(chat_id=chat_id, text=text)
             except Exception as e:
                 await log_to_owner(context, f"[FAREWELL ERROR] {e}")
+
 
 async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.my_chat_member
@@ -807,14 +858,34 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     await log_to_owner(context, f"[MY_CHAT_MEMBER]\nchat={chat_id}\nold={old_status}\nnew={new_status}")
     if chat_id >= 0:
         return
+
+    # Бот покинул чат (или его кикнули) — чистим все данные чата из БД
     if new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+        try:
+            remove_chat_data(chat_id)
+            await log_to_owner(context, f"[CLEANUP] Бот покинул чат {chat_id}, данные удалены")
+        except Exception as e:
+            await log_to_owner(context, f"[CLEANUP ERROR] chat={chat_id}\n{e}")
         return
-    if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+
+    # Бот стал админом (был MEMBER/RESTRICTED или его повысили)
+    if old_status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
         try:
             await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
         except Exception as e:
             await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
-    elif old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
+        return
+
+    # Бот понижен с админа до участника
+    if old_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
+        except Exception as e:
+            await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
+        return
+
+    # Бот добавлен как участник (не админ) — из любого "не-участника"
+    if old_status not in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]:
         text = (
             "Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
             "Для моей корректной работы в чате предоставьте мне права админа, спасибо!\n\n"
@@ -824,6 +895,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
             await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
         except Exception as e:
             await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
+
 
 async def daily_track_loop(app: Application):
     await asyncio.sleep(60)
@@ -851,6 +923,7 @@ async def daily_track_loop(app: Application):
             print(f"[DAILY] Ошибка: {e}")
         await asyncio.sleep(86400)
 
+
 async def keep_database_alive():
     await asyncio.sleep(30)
     while True:
@@ -865,6 +938,7 @@ async def keep_database_alive():
         except Exception as e:
             print(f"=== [PING ERROR] {e} ===")
         await asyncio.sleep(21600)
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"Системное исключение: {context.error}")
@@ -883,8 +957,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception:
         pass
 
+
 async def handle_http(request):
     return web.Response(text="Бот Rar активен!")
+
 
 async def start_webhook():
     app = web.Application()
@@ -895,10 +971,12 @@ async def start_webhook():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
+
 async def on_startup(application: Application):
     asyncio.create_task(start_webhook())
     asyncio.create_task(keep_database_alive())
     asyncio.create_task(daily_track_loop(application))
+
 
 def main():
     if not TOKEN or not DATABASE_URL:
@@ -913,6 +991,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     print("Запуск бота...")
     app.run_polling(allowed_updates=["message", "chat_member", "my_chat_member"])
+
 
 if __name__ == "__main__":
     main()
