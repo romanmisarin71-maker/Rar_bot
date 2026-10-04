@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import time
 import asyncio
 import traceback
 import psycopg2
@@ -33,6 +34,11 @@ STATUS_BANNED = "banned"
 ADMIN_STATUSES = {STATUS_ADMINISTRATOR, STATUS_CREATOR}
 IN_CHAT_STATUSES = {STATUS_MEMBER, STATUS_RESTRICTED, STATUS_ADMINISTRATOR, STATUS_CREATOR}
 LEAVE_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
+
+# Антиповтор для инлайна
+INLINE_SEEN_LIMIT = 100
+INLINE_SEEN_TTL = 300  # 5 минут
+inline_seen = {}  # {user_id: {file_id: timestamp}}
 
 
 def get_db_connection():
@@ -79,12 +85,6 @@ def search_track_in_db(query):
 def search_tracks_in_db(query, limit=20):
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT %s", (f"%{query.strip().lower()}%", limit))
-    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
-
-
-def get_random_tracks_from_db(limit=5):
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT file_id, title FROM channel_music ORDER BY RANDOM() LIMIT %s", (limit,))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
@@ -189,6 +189,36 @@ def clean_title(full_title):
     return full_title.strip()
 
 
+def pick_random_with_antirepeat(user_id, limit):
+    """Выбирает случайные треки, исключая те, что пользователь видел за 5 минут."""
+    now = time.time()
+    seen = inline_seen.get(user_id, {})
+    # Чистим старые
+    seen = {fid: ts for fid, ts in seen.items() if now - ts < INLINE_SEEN_TTL}
+    # Обрезаем до лимита
+    if len(seen) > INLINE_SEEN_LIMIT:
+        sorted_items = sorted(seen.items(), key=lambda x: x[1])
+        seen = dict(sorted_items[-INLINE_SEEN_LIMIT:])
+
+    all_tracks = get_all_tracks_from_db()
+    if not all_tracks:
+        inline_seen[user_id] = seen
+        return []
+
+    available = [t for t in all_tracks if t[0] not in seen]
+    if len(available) < limit:
+        # Сбрасываем кэш и берём заново
+        seen = {}
+        available = all_tracks
+
+    random.shuffle(available)
+    chosen = available[:limit]
+    for fid, _ in chosen:
+        seen[fid] = now
+    inline_seen[user_id] = seen
+    return chosen
+
+
 async def log_to_owner(context, text):
     try:
         owner_id = get_owner_id()
@@ -259,12 +289,33 @@ async def start_command(update, context):
 
 async def inline_query_handler(update, context):
     query = update.inline_query.query.strip().lower()
+    user_id = update.inline_query.from_user.id
     results = []
 
     try:
-        # 1. Рандомные треки + кнопка "Новый набор"
-        if query in ["дай песню", "песня", "музыка"]:
-            tracks = get_random_tracks_from_db(limit=5)
+        # 1. Пустой запрос — 10 треков + кнопка
+        if query == "":
+            tracks = pick_random_with_antirepeat(user_id, limit=10)
+            for i, (fid, title) in enumerate(tracks):
+                results.append(InlineQueryResultCachedAudio(
+                    id=f"empty_{i}_{fid[:20]}",
+                    audio_file_id=fid,
+                    caption=clean_title(title),
+                ))
+            results.append(InlineQueryResultArticle(
+                id="shuffle_empty",
+                title="🔄 Новый набор песен",
+                description="Показать другие случайные треки",
+                input_message_content=InputTextMessageContent("🔄 Новый набор"),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")
+                ]])
+            ))
+            await update.inline_query.answer(results, cache_time=0)
+
+        # 2. Дай песню / песня / музыка — 20 треков + кнопка
+        elif query in ["дай песню", "песня", "музыка"]:
+            tracks = pick_random_with_antirepeat(user_id, limit=20)
             for i, (fid, title) in enumerate(tracks):
                 results.append(InlineQueryResultCachedAudio(
                     id=f"rand_{i}_{fid[:20]}",
@@ -282,7 +333,7 @@ async def inline_query_handler(update, context):
             ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 2. Поиск по "найди X" / "трек X"
+        # 3. Поиск по "найди X" / "трек X" — без антиповтора, без кнопки
         elif query.startswith("найди ") or query.startswith("трек "):
             search = query[6:].strip()
             if not search:
@@ -296,7 +347,7 @@ async def inline_query_handler(update, context):
                 ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 3. Монетка
+        # 4. Монетка
         elif query.startswith("монетка") or query.startswith("подкинь монетку"):
             if random.randint(1, 50) == 50:
                 coin_text = "Эээ... монетка встала ребром..."
@@ -309,7 +360,7 @@ async def inline_query_handler(update, context):
             ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 4. Автопоиск
+        # 5. Автопоиск — без антиповтора, без кнопки
         else:
             tracks = search_tracks_in_db(query, limit=20)
             for i, (fid, title) in enumerate(tracks):
@@ -397,7 +448,8 @@ async def handle_message(update, context):
             "<b>Администрирование:</b>\n"
             "• <code>калл</code> – тег участников по 6 человек (только для админов)\n\n"
             "<b>Инлайн-режим (работает в любом чате):</b>\n"
-            "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 5 случайных треков + кнопка «Новый набор»\n"
+            "• <code>@ChRarBot </code> (пустой запрос) – 10 случайных треков + кнопка «Новый набор»\n"
+            "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 20 случайных треков + кнопка «Новый набор»\n"
             "• <code>@ChRarBot найди</code> [название] / <code>трек</code> [название] – поиск по коллекции\n"
             "• <code>@ChRarBot</code> [любой текст] – автопоиск по названию\n"
             "• <code>@ChRarBot монетка</code> / <code>подкинь монетку</code> – бросок монетки\n\n"
