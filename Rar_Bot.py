@@ -533,7 +533,6 @@ async def inline_query_handler(update, context):
             pid, pname, owner_id, track_nums = pl
             if not track_nums:
                 await update.inline_query.answer([], cache_time=0); return
-            # Считаем поиск при запросе
             increment_playlist_search(pid)
             tracks = get_tracks_by_nums(track_nums)
             for i, (fid, title) in enumerate(tracks):
@@ -637,13 +636,13 @@ async def playlist_nav_handler(update, context):
         except Exception:
             pass
         return
-    text, fid, kb = built
+    text_msg, fid, kb = built
     try:
         await query.message.delete()
     except Exception:
         pass
     try:
-        await context.bot.send_audio(chat_id=query.message.chat_id, audio=fid, caption=text, reply_markup=kb, parse_mode="HTML")
+        await context.bot.send_audio(chat_id=query.message.chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         await log_to_owner(context, f"[PL NAV ERROR] {e}")
 
@@ -670,8 +669,11 @@ async def handle_message(update, context):
     if update.message.text: incoming = update.message.text.lower().strip()
     elif update.message.caption: incoming = update.message.caption.lower().strip()
 
+    # Определяем text заранее — используется в regex с оригинальным регистром
+    text = update.message.text or ""
+
     # ===== РАР ДОБАВЬ В ПЛЕЙЛИСТ =====
-    add_to_pl = re.match(r"^(рар|rar),?\s+добав(ь|ить)\s+в\s+(.+)$", text if update.message.text else incoming, re.IGNORECASE)
+    add_to_pl = re.match(r"^(рар|rar),?\s+добав(ь|ить)\s+в\s+(.+)$", text, re.IGNORECASE)
     if add_to_pl:
         pl_name = add_to_pl.group(3).strip()
         target = None
@@ -693,7 +695,6 @@ async def handle_message(update, context):
         perf = target.performer.strip() if target.performer else ""
         title = target.title.strip() if target.title else ""
         track_title = f"{perf} - {title}" if perf and title else (target.file_name or "Неизвестный трек")
-        # Ищем трек по file_id, если нет — по title
         tn = get_track_num(target.file_id)
         if not tn:
             existing = search_track_in_db_by_title(track_title)
@@ -745,8 +746,7 @@ async def handle_message(update, context):
             await update.message.reply_text('Прикрепи аудио или ответь командой "Рар добавь" на нужный трек')
         return
 
-    if not update.message.text: return
-    text = update.message.text
+    if not text: return
     clean = text.lower().strip()
 
     # ===== РАР КОМАНДЫ =====
@@ -1234,7 +1234,6 @@ async def handle_my_chat_member(update, context):
             return
 
         if old_status not in ADMIN_STATUSES and new_status in ADMIN_STATUSES:
-            # Антидубль
             now = time.time()
             if chat_id in _recent_greets and now - _recent_greets[chat_id] < GREET_DEDUP_TTL:
                 return
@@ -1250,7 +1249,6 @@ async def handle_my_chat_member(update, context):
             return
 
         if old_status not in IN_CHAT_STATUSES and new_status in IN_CHAT_STATUSES:
-            # Записываем время приветствия
             _recent_greets[chat_id] = time.time()
             try:
                 admins = await context.bot.get_chat_administrators(chat_id)
