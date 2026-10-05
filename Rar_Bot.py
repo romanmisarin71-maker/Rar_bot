@@ -15,7 +15,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
-    InlineQueryHandler, filters, ContextTypes
+    InlineQueryHandler, ChosenInlineResultHandler, filters, ContextTypes
 )
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -38,8 +38,12 @@ LEAVE_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
 
 # Антиповтор для инлайна
 INLINE_SEEN_LIMIT = 100
-INLINE_SEEN_TTL = 300  # 5 минут
-inline_seen = {}  # {user_id: {file_id: timestamp}}
+INLINE_SEEN_TTL = 300
+inline_seen = {}
+
+# Кэш для chosen_inline_result (result_id -> (file_id, timestamp))
+INLINE_RESULT_CACHE_TTL = 300
+inline_result_cache = {}
 
 
 def get_db_connection():
@@ -56,6 +60,12 @@ def init_db():
     cursor.execute("""CREATE TABLE IF NOT EXISTS channel_music (
         file_id TEXT PRIMARY KEY, title TEXT NOT NULL,
         added_by BIGINT, added_at TIMESTAMP DEFAULT NOW())""")
+    # Добавляем track_num если нет
+    cursor.execute("ALTER TABLE channel_music ADD COLUMN IF NOT EXISTS track_num SERIAL")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_music_track_num ON channel_music(track_num)")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS track_stats (
+        track_num INTEGER PRIMARY KEY REFERENCES channel_music(track_num) ON DELETE CASCADE,
+        plays BIGINT DEFAULT 0, last_played TIMESTAMP DEFAULT NOW())""")
     cursor.execute("""CREATE TABLE IF NOT EXISTS chat_settings (
         chat_id BIGINT PRIMARY KEY, greet_enabled BOOLEAN DEFAULT TRUE,
         farewell_enabled BOOLEAN DEFAULT TRUE,
@@ -79,13 +89,13 @@ def save_track_to_db(file_id, title, added_by):
 
 def search_track_in_db(query):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT 1", (f"%{query.strip().lower()}%",))
+    cursor.execute("SELECT file_id, title, track_num FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT 1", (f"%{query.strip().lower()}%",))
     row = cursor.fetchone(); cursor.close(); conn.close(); return row
 
 
 def search_tracks_in_db(query, limit=20):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT file_id, title FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT %s", (f"%{query.strip().lower()}%", limit))
+    cursor.execute("SELECT file_id, title, track_num FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT %s", (f"%{query.strip().lower()}%", limit))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
@@ -101,8 +111,46 @@ def delete_track_from_db(file_id):
     row = cursor.fetchone()
     if row:
         cursor.execute("DELETE FROM channel_music WHERE file_id = %s", (file_id,))
+        # Заготовка: чистка плейлистов (на будущее)
+        try:
+            cursor.execute("UPDATE playlists SET track_nums = array_remove(track_nums, (SELECT track_num FROM channel_music WHERE file_id = %s)) WHERE track_num = ANY(track_nums)", (file_id,))
+        except Exception:
+            pass  # Таблицы playlists ещё нет
         conn.commit(); cursor.close(); conn.close(); return row[0]
     cursor.close(); conn.close(); return None
+
+
+def get_track_num(file_id):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT track_num FROM channel_music WHERE file_id = %s", (file_id,))
+    row = cursor.fetchone(); cursor.close(); conn.close(); return row[0] if row else None
+
+
+def increment_play(file_id):
+    """Увеличивает счётчик прослушиваний трека."""
+    try:
+        tn = get_track_num(file_id)
+        if not tn: return
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("""INSERT INTO track_stats (track_num, plays, last_played)
+            VALUES (%s, 1, NOW())
+            ON CONFLICT (track_num) DO UPDATE SET
+                plays = track_stats.plays + 1,
+                last_played = NOW()""", (tn,))
+        conn.commit(); cursor.close(); conn.close()
+    except Exception as e:
+        print(f"[INCREMENT PLAY ERROR] {e}")
+
+
+def get_top_tracks(limit=10):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("""SELECT cm.title, ts.plays
+        FROM track_stats ts
+        JOIN channel_music cm ON cm.track_num = ts.track_num
+        WHERE ts.plays > 0
+        ORDER BY ts.plays DESC
+        LIMIT %s""", (limit,))
+    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
 def get_chat_settings(chat_id):
@@ -197,23 +245,28 @@ def pick_random_with_antirepeat(user_id, limit):
     if len(seen) > INLINE_SEEN_LIMIT:
         sorted_items = sorted(seen.items(), key=lambda x: x[1])
         seen = dict(sorted_items[-INLINE_SEEN_LIMIT:])
-
     all_tracks = get_all_tracks_from_db()
     if not all_tracks:
         inline_seen[user_id] = seen
         return []
-
     available = [t for t in all_tracks if t[0] not in seen]
     if len(available) < limit:
         seen = {}
         available = all_tracks
-
     random.shuffle(available)
     chosen = available[:limit]
     for fid, _ in chosen:
         seen[fid] = now
     inline_seen[user_id] = seen
     return chosen
+
+
+def cleanup_inline_result_cache():
+    """Чистит старые записи из кэша result_id."""
+    now = time.time()
+    to_delete = [rid for rid, (_, ts) in inline_result_cache.items() if now - ts > INLINE_RESULT_CACHE_TTL]
+    for rid in to_delete:
+        del inline_result_cache[rid]
 
 
 async def log_to_owner(context, text):
@@ -288,9 +341,9 @@ async def inline_query_handler(update, context):
     query = update.inline_query.query.strip().lower()
     user_id = update.inline_query.from_user.id
     results = []
+    cleanup_inline_result_cache()
 
     try:
-        # 1. Пустой запрос — 10 треков + кнопка
         if query == "":
             tracks = pick_random_with_antirepeat(user_id, limit=10)
             for i, (fid, title) in enumerate(tracks):
@@ -311,7 +364,6 @@ async def inline_query_handler(update, context):
             ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 2. Дай песню / песня / музыка — 20 треков + кнопка
         elif query in ["дай песню", "песня", "музыка"]:
             tracks = pick_random_with_antirepeat(user_id, limit=20)
             for i, (fid, title) in enumerate(tracks):
@@ -332,21 +384,22 @@ async def inline_query_handler(update, context):
             ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 3. Поиск по "найди X" / "трек X"
         elif query.startswith("найди ") or query.startswith("трек "):
             search = query[6:].strip()
             if not search:
                 await update.inline_query.answer([], cache_time=0); return
             tracks = search_tracks_in_db(search, limit=20)
-            for i, (fid, title) in enumerate(tracks):
+            for i, (fid, title, tnum) in enumerate(tracks):
+                # Кэшируем result_id -> file_id для chosen_inline_result
+                rid = f"find_{i}_{int(time.time()*1000)}_{fid[:10]}"
+                inline_result_cache[rid] = (fid, time.time())
                 results.append(InlineQueryResultCachedAudio(
-                    id=f"find_{i}_{fid[:20]}",
+                    id=rid,
                     audio_file_id=fid,
                     caption=clean_title(title),
                 ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 4. Монетка
         elif query.startswith("монетка") or query.startswith("подкинь монетку"):
             if random.randint(1, 50) == 50:
                 coin_text = "Эээ... монетка встала ребром..."
@@ -360,12 +413,13 @@ async def inline_query_handler(update, context):
             ))
             await update.inline_query.answer(results, cache_time=0)
 
-        # 5. Автопоиск
         else:
             tracks = search_tracks_in_db(query, limit=20)
-            for i, (fid, title) in enumerate(tracks):
+            for i, (fid, title, tnum) in enumerate(tracks):
+                rid = f"auto_{i}_{int(time.time()*1000)}_{fid[:10]}"
+                inline_result_cache[rid] = (fid, time.time())
                 results.append(InlineQueryResultCachedAudio(
-                    id=f"auto_{i}_{fid[:20]}",
+                    id=rid,
                     audio_file_id=fid,
                     caption=clean_title(title),
                 ))
@@ -377,6 +431,23 @@ async def inline_query_handler(update, context):
             await update.inline_query.answer([], cache_time=0)
         except Exception:
             pass
+
+
+async def chosen_inline_result_handler(update, context):
+    """Ловит тык пользователя на результат инлайна — для счётчика прослушиваний."""
+    try:
+        result = update.chosen_inline_result
+        if not result: return
+        rid = result.result_id
+        if rid in inline_result_cache:
+            fid, ts = inline_result_cache[rid]
+            if time.time() - ts < INLINE_RESULT_CACHE_TTL:
+                # Считаем только поиск и автопоиск
+                if rid.startswith("find_") or rid.startswith("auto_"):
+                    increment_play(fid)
+            del inline_result_cache[rid]
+    except Exception as e:
+        print(f"[CHOSEN INLINE ERROR] {e}")
 
 
 async def handle_message(update, context):
@@ -398,7 +469,7 @@ async def handle_message(update, context):
     if update.message.text: incoming = update.message.text.lower().strip()
     elif update.message.caption: incoming = update.message.caption.lower().strip()
 
-    if incoming in ["добавь", "добавить"]:
+    if incoming in ["добавь", "добавить", "рар добавь", "рар, добавь", "rar добавь", "rar, добавь", "рар добавить", "рар, добавить", "rar добавить", "rar, добавить"]:
         target = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
             target = update.message.reply_to_message.audio
@@ -423,7 +494,7 @@ async def handle_message(update, context):
             else:
                 await update.message.reply_text(f"Этот трек уже бережно сохранен в моей коллекции под именем: {track_title}")
         else:
-            await update.message.reply_text('Прикрепи аудио или ответь командой "добавь" на нужный трек')
+            await update.message.reply_text('Прикрепи аудио или ответь командой "Рар добавь" на нужный трек')
         return
 
     if not update.message.text: return
@@ -434,9 +505,10 @@ async def handle_message(update, context):
         await update.message.reply_text(
             "<b>Список доступных команд Rar:</b>\n\n"
             "<b>Музыкальная коллекция:</b>\n"
-            "• <code>добавь</code> / <code>добавить</code> (ответом на аудио) – занести трек в коллекцию\n"
+            "• <code>Рар добавь</code> (ответом на аудио) – занести трек в коллекцию\n"
             "• <code>Рар дай песню</code> – отправить случайную песню\n"
-            "• <code>Рар найди</code> [название] – найти сохранённый трек\n\n"
+            "• <code>Рар найди</code> [название] – найти сохранённый трек\n"
+            "• <code>Рар топ песен</code> – топ-10 самых искомых треков\n\n"
             "<b>Настройки чата (только для админов):</b>\n"
             "• <code>Рар вкл приветствие</code> / <code>Рар выкл приветствие</code>\n"
             "• <code>Рар вкл прощание</code> / <code>Рар выкл прощание</code>\n"
@@ -448,10 +520,9 @@ async def handle_message(update, context):
             "<b>Администрирование:</b>\n"
             "• <code>калл</code> – тег участников по 6 человек (только для админов)\n\n"
             "<b>Инлайн-режим (работает в любом чате):</b>\n"
-            "• <code>@ChRarBot </code> (пустой запрос) – 10 случайных треков + кнопка «Новый набор»\n"
-            "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 20 случайных треков + кнопка «Новый набор»\n"
-            "• <code>@ChRarBot найди</code> [название] / <code>трек</code> [название] – поиск по коллекции\n"
-            "• <code>@ChRarBot</code> [любой текст] – автопоиск по названию\n"
+            "• <code>@ChRarBot</code> – 10 случайных треков\n"
+            "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 20 случайных треков\n"
+            "• <code>@ChRarBot</code> [текст] / <code>найди</code> [текст] / <code>трек</code> [текст] – поиск по коллекции\n"
             "• <code>@ChRarBot монетка</code> / <code>подкинь монетку</code> – бросок монетки\n\n"
             "<b>Развлечения:</b>\n"
             "• <code>Рар подкинь монетку</code> – сыграть в орла или решку\n"
@@ -459,6 +530,24 @@ async def handle_message(update, context):
             "• <code>Rar</code> – проверка работы бота",
             parse_mode="HTML"
         )
+        return
+
+    # ТОП ПЕСЕН
+    if clean in ["рар топ песен", "rar топ песен", "рар, топ песен", "rar, топ песен", "рар топ песни", "rar топ песни"]:
+        try:
+            top = get_top_tracks(limit=10)
+            if not top:
+                await update.message.reply_text("Пока никто ничего не искал... Топ пуст!");
+                return
+            lines = ["\n✨ Топ 10 треков в моей коллекции!!!\n"]
+            for i, (title, plays) in enumerate(top, 1):
+                if i <= 3:
+                    lines.append(f"✨{i}. {title} ({plays})✨")
+                else:
+                    lines.append(f"• {i}. {title} ({plays})")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await log_to_owner(context, f"[ТОП ПЕСЕН ERROR] {e}\n{traceback.format_exc()[:1200]}")
         return
 
     toggle_map = {
@@ -614,7 +703,6 @@ async def handle_message(update, context):
 
         try:
             user_ids = get_chat_members(chat_id)
-            await log_to_owner(context, f"[КАЛЛ START]\nchat_id={chat_id}\nuser_ids={user_ids}\nlen={len(user_ids) if user_ids else 0}")
             if not user_ids:
                 await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!"); return
 
@@ -635,9 +723,9 @@ async def handle_message(update, context):
                 if member.status == STATUS_LEFT:
                     to_remove.append(m_id_int); continue
                 if member.status in (STATUS_KICKED, STATUS_BANNED):
-                    errors.append(f"id={m_id_int}: skipped ({member.status})"); continue
+                    continue
                 if member.status not in valid:
-                    errors.append(f"id={m_id_int}: status={member.status}"); continue
+                    continue
 
                 uname = member.user.username
                 fname = member.user.first_name or "друг"
@@ -649,9 +737,7 @@ async def handle_message(update, context):
                     remove_users_from_chat_batch(to_remove, chat_id)
                     for uid in to_remove: uncache_user(uid, chat_id)
                 except Exception as e:
-                    await log_to_owner(context, f"[КАЛЛ BATCH REMOVE ERROR] {e}")
-
-            await log_to_owner(context, f"[КАЛЛ RESULT]\ntags={len(tags)}\nleft={len(to_remove)}\nerrors={errors}")
+                    pass
 
             if not tags:
                 await update.message.reply_text("В моей книжке нет активных участников для тега!"); return
@@ -661,7 +747,7 @@ async def handle_message(update, context):
                 try:
                     await update.message.reply_text("<b>Минуточку внимания!!!</b>\n\n" + "\n".join(chunk), parse_mode="HTML")
                 except Exception as e:
-                    await log_to_owner(context, f"[КАЛЛ SEND ERROR] {e}")
+                    pass
         except Exception as e:
             await log_to_owner(context, f"[КАЛЛ FATAL] {e}\n{traceback.format_exc()[:1200]}")
         return
@@ -673,10 +759,11 @@ async def handle_message(update, context):
         status_msg = await update.message.reply_text("Ищу трек в своей коллекции...")
         local_track = search_track_in_db(query)
         if local_track:
-            fid, ttitle = local_track
+            fid, ttitle, tnum = local_track
             await status_msg.delete()
             try:
                 await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"✨ Вот что нашла у себя в коллекции: {ttitle}\n\nЗапрос: {query}")
+                increment_play(fid)  # ← СЧИТАЕМ ПРОСЛУШИВАНИЕ
             except Exception as e: print(f"[FIND SEND] {e}")
             return
         else:
@@ -691,7 +778,6 @@ async def handle_chat_member(update, context):
         chat_id = result.chat.id
         new_status = result.new_chat_member.status
         old_status = result.old_chat_member.status
-        await log_to_owner(context, f"[CHAT_MEMBER]\nchat={chat_id}\nuser={user.id} name={user.first_name}\nold={old_status}\nnew={new_status}")
         if user.is_bot or chat_id >= 0: return
         if user.id == GROUP_ANON_BOT_ID: return
 
@@ -707,25 +793,25 @@ async def handle_chat_member(update, context):
             try:
                 save_user_to_chat(user.id, chat_id); cache_user(user.id, chat_id)
             except Exception as e:
-                await log_to_owner(context, f"[SAVE USER ERROR] {e}")
+                pass
             if greet_enabled:
                 try:
                     await context.bot.send_message(chat_id=chat_id, text=substitute_vars(greet_text, user_name, chat_title))
                 except Exception as e:
-                    await log_to_owner(context, f"[GREET ERROR] {e}")
+                    pass
 
         elif old_status in IN_CHAT_STATUSES and new_status in LEAVE_STATUSES:
             try:
                 remove_user_from_chat(user.id, chat_id); uncache_user(user.id, chat_id)
             except Exception as e:
-                await log_to_owner(context, f"[REMOVE USER ERROR] {e}")
+                pass
             if farewell_enabled:
                 try:
                     await context.bot.send_message(chat_id=chat_id, text=substitute_vars(farewell_text, user_name, chat_title))
                 except Exception as e:
-                    await log_to_owner(context, f"[FAREWELL ERROR] {e}")
+                    pass
     except Exception as e:
-        await log_to_owner(context, f"[CHAT_MEMBER FATAL] {e}\n{traceback.format_exc()[:1200]}")
+        print(f"[CHAT_MEMBER FATAL] {e}")
 
 
 async def handle_my_chat_member(update, context):
@@ -736,7 +822,6 @@ async def handle_my_chat_member(update, context):
         chat_id = chat.id
         new_status = result.new_chat_member.status
         old_status = result.old_chat_member.status
-        await log_to_owner(context, f"[MY_CHAT_MEMBER]\nchat={chat_id}\nold={old_status}\nnew={new_status}")
         if chat_id >= 0: return
 
         if new_status in LEAVE_STATUSES:
@@ -744,33 +829,47 @@ async def handle_my_chat_member(update, context):
                 remove_chat_data(chat_id)
                 await log_to_owner(context, f"[CLEANUP] Бот покинул чат {chat_id}, данные удалены")
             except Exception as e:
-                await log_to_owner(context, f"[CLEANUP ERROR] chat={chat_id}\n{e}")
+                pass
             return
 
         if old_status not in ADMIN_STATUSES and new_status in ADMIN_STATUSES:
             try:
                 await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
             except Exception as e:
-                await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
+                pass
             return
 
         if old_status in ADMIN_STATUSES and new_status not in ADMIN_STATUSES:
             try:
                 await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
             except Exception as e:
-                await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
+                pass
             return
 
         if old_status not in IN_CHAT_STATUSES and new_status in IN_CHAT_STATUSES:
+            # Подгрузка админов
+            try:
+                admins = await context.bot.get_chat_administrators(chat_id)
+                count = 0
+                for admin in admins:
+                    if admin.user.is_bot: continue
+                    if admin.user.id == GROUP_ANON_BOT_ID: continue
+                    save_user_to_chat(admin.user.id, chat_id)
+                    cache_user(admin.user.id, chat_id)
+                    count += 1
+                await log_to_owner(context, f"[RETURN] Подгружено {count} админов в чат {chat_id}")
+            except Exception as e:
+                await log_to_owner(context, f"[RETURN ADMINS ERROR] {e}")
+
             text = ("Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
                     "Для моей корректной работы в чате предоставьте мне права админа, спасибо!\n\n"
                     "Чтобы узнать, на что я способна, напишите в чате <code>Рар команды</code> после выдачи мне прав.")
             try:
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             except Exception as e:
-                await log_to_owner(context, f"[MY_CHAT_MEMBER ERROR] {e}")
+                pass
     except Exception as e:
-        await log_to_owner(context, f"[MY_CHAT_MEMBER FATAL] {e}\n{traceback.format_exc()[:1200]}")
+        print(f"[MY_CHAT_MEMBER FATAL] {e}")
 
 
 async def daily_track_loop(app):
@@ -784,11 +883,8 @@ async def daily_track_loop(app):
                     fid, title = random.choice(tracks)
                     try:
                         await app.bot.send_audio(chat_id=notify, audio=fid, caption=f"🎵 Ежедневный трек:\n{title}")
-                        print(f"[DAILY] Отправлено в {notify}: {title}")
-                    except Exception as e: print(f"[DAILY SEND] {e}")
-                else: print("[DAILY] Коллекция пуста")
-            else: print("[DAILY] notify_chat_id не задан")
-        except Exception as e: print(f"[DAILY] {e}")
+                    except Exception as e: pass
+        except Exception as e: pass
         await asyncio.sleep(86400)
 
 
@@ -799,7 +895,6 @@ async def keep_database_alive():
             conn = get_db_connection(); cursor = conn.cursor()
             cursor.execute("SELECT 1;"); cursor.fetchone()
             cursor.close(); conn.close()
-            print("=== [PING] БД активна ===")
         except Exception as e: print(f"=== [PING ERROR] {e} ===")
         await asyncio.sleep(21600)
 
@@ -851,9 +946,13 @@ def main():
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(InlineQueryHandler(inline_query_handler))
+    app.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     print("Запуск бота...")
-    app.run_polling(allowed_updates=["message", "chat_member", "my_chat_member", "inline_query"])
+    app.run_polling(allowed_updates=[
+        "message", "chat_member", "my_chat_member",
+        "inline_query", "chosen_inline_result"
+    ])
 
 
 if __name__ == "__main__":
