@@ -15,7 +15,8 @@ from telegram import (
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
-    InlineQueryHandler, ChosenInlineResultHandler, filters, ContextTypes
+    InlineQueryHandler, ChosenInlineResultHandler, CallbackQueryHandler,
+    filters, ContextTypes
 )
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -23,6 +24,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 GROUP_ANON_BOT_ID = 1087968824
 SAVED_USERS_CACHE_LIMIT = 2000
 RAR_LOGO_URL = "https://raw.githubusercontent.com/romanmisarin71-maker/Rar_bot/main/RarFaceBulka.png"
+MODERATION_CHAT_ID = -1003907890387
 
 STATUS_CREATOR = "creator"
 STATUS_ADMINISTRATOR = "administrator"
@@ -36,14 +38,17 @@ ADMIN_STATUSES = {STATUS_ADMINISTRATOR, STATUS_CREATOR}
 IN_CHAT_STATUSES = {STATUS_MEMBER, STATUS_RESTRICTED, STATUS_ADMINISTRATOR, STATUS_CREATOR}
 LEAVE_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
 
-# Антиповтор для инлайна
 INLINE_SEEN_LIMIT = 100
 INLINE_SEEN_TTL = 300
 inline_seen = {}
 
-# Кэш для chosen_inline_result (result_id -> (file_id, timestamp))
 INLINE_RESULT_CACHE_TTL = 300
 inline_result_cache = {}
+
+PLAYLIST_LIMIT = 20
+RECENT_PLAYLISTS_LIMIT = 20
+RECENT_PLAYLISTS_TTL = 300
+recent_playlists = {}
 
 
 def get_db_connection():
@@ -60,7 +65,6 @@ def init_db():
     cursor.execute("""CREATE TABLE IF NOT EXISTS channel_music (
         file_id TEXT PRIMARY KEY, title TEXT NOT NULL,
         added_by BIGINT, added_at TIMESTAMP DEFAULT NOW())""")
-    # Добавляем track_num если нет
     cursor.execute("ALTER TABLE channel_music ADD COLUMN IF NOT EXISTS track_num SERIAL")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_music_track_num ON channel_music(track_num)")
     cursor.execute("""CREATE TABLE IF NOT EXISTS track_stats (
@@ -77,6 +81,8 @@ def init_db():
         key TEXT PRIMARY KEY, value TEXT)""")
     conn.commit(); cursor.close(); conn.close()
 
+
+# ==================== ТРЕКИ ====================
 
 def save_track_to_db(file_id, title, added_by):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -107,16 +113,14 @@ def get_all_tracks_from_db():
 
 def delete_track_from_db(file_id):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT title FROM channel_music WHERE file_id = %s", (file_id,))
+    cursor.execute("SELECT title, track_num FROM channel_music WHERE file_id = %s", (file_id,))
     row = cursor.fetchone()
     if row:
+        title, tnum = row
+        # Чистим из всех плейлистов
+        cursor.execute("UPDATE playlists SET track_nums = array_remove(track_nums, %s) WHERE %s = ANY(track_nums)", (tnum, tnum))
         cursor.execute("DELETE FROM channel_music WHERE file_id = %s", (file_id,))
-        # Заготовка: чистка плейлистов (на будущее)
-        try:
-            cursor.execute("UPDATE playlists SET track_nums = array_remove(track_nums, (SELECT track_num FROM channel_music WHERE file_id = %s)) WHERE track_num = ANY(track_nums)", (file_id,))
-        except Exception:
-            pass  # Таблицы playlists ещё нет
-        conn.commit(); cursor.close(); conn.close(); return row[0]
+        conn.commit(); cursor.close(); conn.close(); return title
     cursor.close(); conn.close(); return None
 
 
@@ -126,8 +130,23 @@ def get_track_num(file_id):
     row = cursor.fetchone(); cursor.close(); conn.close(); return row[0] if row else None
 
 
+def get_track_by_num(track_num):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT file_id, title FROM channel_music WHERE track_num = %s", (track_num,))
+    row = cursor.fetchone(); cursor.close(); conn.close(); return row
+
+
+def get_tracks_by_nums(track_nums):
+    if not track_nums: return []
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT track_num, file_id, title FROM channel_music WHERE track_num = ANY(%s)", (track_nums,))
+    rows = cursor.fetchall(); cursor.close(); conn.close()
+    # Сохраняем порядок из track_nums
+    mapping = {r[0]: (r[1], r[2]) for r in rows}
+    return [mapping[tn] for tn in track_nums if tn in mapping]
+
+
 def increment_play(file_id):
-    """Увеличивает счётчик прослушиваний трека."""
     try:
         tn = get_track_num(file_id)
         if not tn: return
@@ -135,8 +154,7 @@ def increment_play(file_id):
         cursor.execute("""INSERT INTO track_stats (track_num, plays, last_played)
             VALUES (%s, 1, NOW())
             ON CONFLICT (track_num) DO UPDATE SET
-                plays = track_stats.plays + 1,
-                last_played = NOW()""", (tn,))
+                plays = track_stats.plays + 1, last_played = NOW()""", (tn,))
         conn.commit(); cursor.close(); conn.close()
     except Exception as e:
         print(f"[INCREMENT PLAY ERROR] {e}")
@@ -147,11 +165,132 @@ def get_top_tracks(limit=10):
     cursor.execute("""SELECT cm.title, ts.plays
         FROM track_stats ts
         JOIN channel_music cm ON cm.track_num = ts.track_num
-        WHERE ts.plays > 0
-        ORDER BY ts.plays DESC
-        LIMIT %s""", (limit,))
+        WHERE ts.plays > 0 ORDER BY ts.plays DESC LIMIT %s""", (limit,))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
+
+# ==================== ПЛЕЙЛИСТЫ ====================
+
+def create_playlist(name, owner_id):
+    """Создаёт плейлист. Возвращает (playlist_id, error)."""
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT playlist_id FROM playlists WHERE LOWER(name) = LOWER(%s)", (name,))
+    if cursor.fetchone():
+        cursor.close(); conn.close(); return None, "exists"
+    try:
+        cursor.execute("INSERT INTO playlists (name, owner_id) VALUES (%s, %s) RETURNING playlist_id", (name, owner_id))
+        pid = cursor.fetchone()[0]
+        cursor.execute("INSERT INTO playlist_stats (playlist_id) VALUES (%s) ON CONFLICT DO NOTHING", (pid,))
+        conn.commit(); cursor.close(); conn.close(); return pid, None
+    except Exception as e:
+        conn.rollback(); cursor.close(); conn.close(); return None, str(e)
+
+
+def get_playlist_by_name(name):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT playlist_id, name, owner_id, track_nums FROM playlists WHERE LOWER(name) = LOWER(%s)", (name,))
+    row = cursor.fetchone(); cursor.close(); conn.close(); return row
+
+
+def get_playlist_by_id(pid):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT playlist_id, name, owner_id, track_nums FROM playlists WHERE playlist_id = %s", (pid,))
+    row = cursor.fetchone(); cursor.close(); conn.close(); return row
+
+
+def get_user_playlists(owner_id):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT playlist_id, name, track_nums FROM playlists WHERE owner_id = %s ORDER BY created_at ASC", (owner_id,))
+    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
+
+
+def delete_playlist(pid):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("DELETE FROM playlists WHERE playlist_id = %s", (pid,))
+    conn.commit(); cursor.close(); conn.close()
+
+
+def rename_playlist(pid, new_name):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT playlist_id FROM playlists WHERE LOWER(name) = LOWER(%s) AND playlist_id != %s", (new_name, pid))
+    if cursor.fetchone():
+        cursor.close(); conn.close(); return "exists"
+    cursor.execute("UPDATE playlists SET name = %s WHERE playlist_id = %s", (new_name, pid))
+    conn.commit(); cursor.close(); conn.close(); return None
+
+
+def add_track_to_playlist(pid, track_num):
+    """Добавляет трек. Возвращает 'ok' | 'already' | 'limit'."""
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT track_nums FROM playlists WHERE playlist_id = %s", (pid,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.close(); conn.close(); return "not_found"
+    nums = row[0] or []
+    if track_num in nums:
+        cursor.close(); conn.close(); return "already"
+    if len(nums) >= PLAYLIST_LIMIT:
+        cursor.close(); conn.close(); return "limit"
+    cursor.execute("UPDATE playlists SET track_nums = array_append(track_nums, %s) WHERE playlist_id = %s", (track_num, pid))
+    conn.commit(); cursor.close(); conn.close(); return "ok"
+
+
+def remove_track_from_playlist(pid, track_num):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("UPDATE playlists SET track_nums = array_remove(track_nums, %s) WHERE playlist_id = %s", (track_num, pid))
+    conn.commit(); cursor.close(); conn.close()
+
+
+def increment_playlist_search(pid):
+    try:
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("""INSERT INTO playlist_stats (playlist_id, searches, last_searched)
+            VALUES (%s, 1, NOW())
+            ON CONFLICT (playlist_id) DO UPDATE SET
+                searches = playlist_stats.searches + 1, last_searched = NOW()""", (pid,))
+        conn.commit(); cursor.close(); conn.close()
+    except Exception as e:
+        print(f"[PLAYLIST SEARCH ERROR] {e}")
+
+
+def get_top_playlists(limit=10):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("""SELECT p.name, ps.searches
+        FROM playlist_stats ps
+        JOIN playlists p ON p.playlist_id = ps.playlist_id
+        WHERE ps.searches > 0 ORDER BY ps.searches DESC LIMIT %s""", (limit,))
+    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
+
+
+def get_random_playlist_with_tracks(user_id):
+    """Возвращает (playlist_id, name, owner_id, track_nums) без недавних и пустых."""
+    now = time.time()
+    seen = recent_playlists.get(user_id, {})
+    seen = {pid: ts for pid, ts in seen.items() if now - ts < RECENT_PLAYLISTS_TTL}
+    if len(seen) > RECENT_PLAYLISTS_LIMIT:
+        sorted_items = sorted(seen.items(), key=lambda x: x[1])
+        seen = dict(sorted_items[-RECENT_PLAYLISTS_LIMIT:])
+
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("""SELECT playlist_id, name, owner_id, track_nums FROM playlists
+        WHERE cardinality(track_nums) > 0""")
+    all_pls = cursor.fetchall(); cursor.close(); conn.close()
+    if not all_pls:
+        recent_playlists[user_id] = seen
+        return None
+
+    available = [p for p in all_pls if p[0] not in seen]
+    if not available:
+        seen = {}
+        available = all_pls
+
+    chosen = random.choice(available)
+    seen[chosen[0]] = now
+    recent_playlists[user_id] = seen
+    return chosen
+
+
+# ==================== ЧАТЫ ====================
 
 def get_chat_settings(chat_id):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -227,6 +366,8 @@ def get_notify_chat_id():
     v = get_system_setting("notify_chat_id"); return int(v) if v else None
 
 
+# ==================== ХЕЛПЕРЫ ====================
+
 def substitute_vars(text, user_name, chat_title):
     text = text.replace("%имя%", user_name).replace("%user%", user_name)
     return text.replace("%чат%", chat_title).replace("%chat%", chat_title)
@@ -247,26 +388,21 @@ def pick_random_with_antirepeat(user_id, limit):
         seen = dict(sorted_items[-INLINE_SEEN_LIMIT:])
     all_tracks = get_all_tracks_from_db()
     if not all_tracks:
-        inline_seen[user_id] = seen
-        return []
+        inline_seen[user_id] = seen; return []
     available = [t for t in all_tracks if t[0] not in seen]
     if len(available) < limit:
-        seen = {}
-        available = all_tracks
+        seen = {}; available = all_tracks
     random.shuffle(available)
     chosen = available[:limit]
-    for fid, _ in chosen:
-        seen[fid] = now
+    for fid, _ in chosen: seen[fid] = now
     inline_seen[user_id] = seen
     return chosen
 
 
 def cleanup_inline_result_cache():
-    """Чистит старые записи из кэша result_id."""
     now = time.time()
     to_delete = [rid for rid, (_, ts) in inline_result_cache.items() if now - ts > INLINE_RESULT_CACHE_TTL]
-    for rid in to_delete:
-        del inline_result_cache[rid]
+    for rid in to_delete: del inline_result_cache[rid]
 
 
 async def log_to_owner(context, text):
@@ -278,6 +414,13 @@ async def log_to_owner(context, text):
             await context.bot.send_message(chat_id=owner_id, text=f"🔔 <b>LOG</b>\n<code>{safe}</code>", parse_mode="HTML")
     except Exception as e:
         print(f"[LOG ERROR] {e}")
+
+
+async def notify_moderation(context, text):
+    try:
+        await context.bot.send_message(chat_id=MODERATION_CHAT_ID, text=text, parse_mode="HTML")
+    except Exception as e:
+        print(f"[MODERATION NOTIFY ERROR] {e}")
 
 
 saved_users_cache = OrderedDict()
@@ -326,7 +469,7 @@ recent_tracks_history, love_replies_history, hi_replies_history = {}, {}, {}
 GREET_PREFIXES = ["рар измени приветствие","рар, измени приветствие","rar измени приветствие","rar, измени приветствие","рар изменить приветствие","рар, изменить приветствие","rar изменить приветствие","rar, изменить приветствие"]
 FAREWELL_PREFIXES = ["рар измени прощание","рар, измени прощание","rar измени прощание","rar, измени прощание","рар изменить прощание","рар, изменить прощание","rar изменить прощание","rar, изменить прощание"]
 DELETE_COMMANDS = ["рар удали","рар, удали","rar удали","rar, удали","рар удалить","рар, удалить","rar удалить","rar, удалить"]
-
+# ==================== СТАРТ ====================
 
 async def start_command(update, context):
     if update.effective_chat.id >= 0:
@@ -336,6 +479,8 @@ async def start_command(update, context):
                 "Чтобы узнать, на что я способна, напишите в чате: <code>Рар команды</code>")
         await update.message.reply_text(text, parse_mode="HTML")
 
+
+# ==================== ИНЛАЙН ====================
 
 async def inline_query_handler(update, context):
     query = update.inline_query.query.strip().lower()
@@ -348,40 +493,46 @@ async def inline_query_handler(update, context):
             tracks = pick_random_with_antirepeat(user_id, limit=10)
             for i, (fid, title) in enumerate(tracks):
                 results.append(InlineQueryResultCachedAudio(
-                    id=f"empty_{i}_{fid[:20]}",
-                    audio_file_id=fid,
-                    caption=clean_title(title),
-                ))
+                    id=f"empty_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
             results.append(InlineQueryResultArticle(
                 id="shuffle_empty",
                 title="🔄 Новый набор песен",
                 description="Показать другие случайные треки",
                 thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")
-                ]])
-            ))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
             await update.inline_query.answer(results, cache_time=0)
 
         elif query in ["дай песню", "песня", "музыка"]:
             tracks = pick_random_with_antirepeat(user_id, limit=20)
             for i, (fid, title) in enumerate(tracks):
                 results.append(InlineQueryResultCachedAudio(
-                    id=f"rand_{i}_{fid[:20]}",
-                    audio_file_id=fid,
-                    caption=clean_title(title),
-                ))
+                    id=f"rand_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
             results.append(InlineQueryResultArticle(
                 id="shuffle",
                 title="🔄 Новый набор песен",
                 description="Показать другие случайные треки",
                 thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")
-                ]])
-            ))
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
+            await update.inline_query.answer(results, cache_time=0)
+
+        elif query.startswith("плейлист "):
+            pl_name = query[9:].strip()
+            if not pl_name:
+                await update.inline_query.answer([], cache_time=0); return
+            pl = get_playlist_by_name(pl_name)
+            if not pl:
+                await update.inline_query.answer([], cache_time=0); return
+            pid, pname, owner_id, track_nums = pl
+            if not track_nums:
+                await update.inline_query.answer([], cache_time=0); return
+            tracks = get_tracks_by_nums(track_nums)
+            for i, (fid, title) in enumerate(tracks):
+                rid = f"pl_{pid}_{i}_{int(time.time()*1000)}"
+                inline_result_cache[rid] = (fid, time.time())
+                results.append(InlineQueryResultCachedAudio(
+                    id=rid, audio_file_id=fid, caption=clean_title(title)))
             await update.inline_query.answer(results, cache_time=0)
 
         elif query.startswith("найди ") or query.startswith("трек "):
@@ -390,14 +541,10 @@ async def inline_query_handler(update, context):
                 await update.inline_query.answer([], cache_time=0); return
             tracks = search_tracks_in_db(search, limit=20)
             for i, (fid, title, tnum) in enumerate(tracks):
-                # Кэшируем result_id -> file_id для chosen_inline_result
                 rid = f"find_{i}_{int(time.time()*1000)}_{fid[:10]}"
                 inline_result_cache[rid] = (fid, time.time())
                 results.append(InlineQueryResultCachedAudio(
-                    id=rid,
-                    audio_file_id=fid,
-                    caption=clean_title(title),
-                ))
+                    id=rid, audio_file_id=fid, caption=clean_title(title)))
             await update.inline_query.answer(results, cache_time=0)
 
         elif query.startswith("монетка") or query.startswith("подкинь монетку"):
@@ -406,11 +553,8 @@ async def inline_query_handler(update, context):
             else:
                 coin_text = random.choice(answers_coin)
             results.append(InlineQueryResultArticle(
-                id="coin",
-                title="🎲 Бросить монетку",
-                thumbnail_url=RAR_LOGO_URL,
-                input_message_content=InputTextMessageContent(coin_text)
-            ))
+                id="coin", title="🎲 Бросить монетку", thumbnail_url=RAR_LOGO_URL,
+                input_message_content=InputTextMessageContent(coin_text)))
             await update.inline_query.answer(results, cache_time=0)
 
         else:
@@ -419,10 +563,7 @@ async def inline_query_handler(update, context):
                 rid = f"auto_{i}_{int(time.time()*1000)}_{fid[:10]}"
                 inline_result_cache[rid] = (fid, time.time())
                 results.append(InlineQueryResultCachedAudio(
-                    id=rid,
-                    audio_file_id=fid,
-                    caption=clean_title(title),
-                ))
+                    id=rid, audio_file_id=fid, caption=clean_title(title)))
             await update.inline_query.answer(results, cache_time=0)
 
     except Exception as e:
@@ -434,7 +575,6 @@ async def inline_query_handler(update, context):
 
 
 async def chosen_inline_result_handler(update, context):
-    """Ловит тык пользователя на результат инлайна — для счётчика прослушиваний."""
     try:
         result = update.chosen_inline_result
         if not result: return
@@ -442,13 +582,66 @@ async def chosen_inline_result_handler(update, context):
         if rid in inline_result_cache:
             fid, ts = inline_result_cache[rid]
             if time.time() - ts < INLINE_RESULT_CACHE_TTL:
-                # Считаем только поиск и автопоиск
-                if rid.startswith("find_") or rid.startswith("auto_"):
+                if rid.startswith("find_") or rid.startswith("auto_") or rid.startswith("pl_"):
                     increment_play(fid)
             del inline_result_cache[rid]
     except Exception as e:
         print(f"[CHOSEN INLINE ERROR] {e}")
 
+
+# ==================== КНОПКИ ПЛЕЙЛИСТА ====================
+
+def build_playlist_message(pid, index):
+    """Возвращает (text, audio_file_id, keyboard) или None."""
+    pl = get_playlist_by_id(pid)
+    if not pl: return None
+    pid_, name, owner_id, track_nums = pl
+    if not track_nums: return None
+    total = len(track_nums)
+    index = index % total
+    tn = track_nums[index]
+    track = get_track_by_num(tn)
+    if not track: return None
+    fid, title = track
+    text = f"✨ Плейлист: {name}\n| {index+1}/{total} | {clean_title(title)}"
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬅️ Назад", callback_data=f"pl_{pid}_{(index-1) % total}"),
+        InlineKeyboardButton("➡️ Далее", callback_data=f"pl_{pid}_{(index+1) % total}")
+    ]])
+    return text, fid, kb
+
+
+async def playlist_nav_handler(update, context):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    data = query.data
+    m = re.match(r"^pl_(\d+)_(\d+)$", data)
+    if not m:
+        return
+    pid = int(m.group(1))
+    index = int(m.group(2))
+    built = build_playlist_message(pid, index)
+    if not built:
+        try:
+            await query.edit_message_text("Плейлист пуст или удалён")
+        except Exception:
+            pass
+        return
+    text, fid, kb = built
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    try:
+        await context.bot.send_audio(chat_id=query.message.chat_id, audio=fid, caption=text, reply_markup=kb)
+    except Exception as e:
+        await log_to_owner(context, f"[PL NAV ERROR] {e}")
+
+
+# ==================== ОСНОВНОЙ ОБРАБОТЧИК ====================
 
 async def handle_message(update, context):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
@@ -458,18 +651,59 @@ async def handle_message(update, context):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     username = update.effective_user.username
+    owner_id = get_owner_id()
 
     if chat_id < 0 and not is_user_cached(user_id, chat_id):
         try:
             save_user_to_chat(user_id, chat_id); cache_user(user_id, chat_id)
-        except Exception as e:
-            await log_to_owner(context, f"[SAVE USER ERROR] user={user_id} chat={chat_id}\n{e}")
+        except Exception:
+            pass
 
     incoming = ""
     if update.message.text: incoming = update.message.text.lower().strip()
     elif update.message.caption: incoming = update.message.caption.lower().strip()
 
-    if incoming in ["добавь", "добавить", "рар добавь", "рар, добавь", "rar добавь", "rar, добавь", "рар добавить", "рар, добавить", "rar добавить", "rar, добавить"]:
+    # ===== РАР ДОБАВЬ В ПЛЕЙЛИСТ =====
+    add_to_pl = re.match(r"^(рар|rar),?\s+добав(ь|ить)\s+в\s+(.+)$", incoming)
+    if add_to_pl:
+        pl_name = add_to_pl.group(3).strip()
+        target = None
+        if update.message.reply_to_message and update.message.reply_to_message.audio:
+            target = update.message.reply_to_message.audio
+        elif update.message.audio:
+            target = update.message.audio
+        if not target:
+            await update.message.reply_text('Прикрепи аудио или ответь командой "Рар добавь в ' + pl_name + '" на нужный трек')
+            return
+        pl = get_playlist_by_name(pl_name)
+        if not pl:
+            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>, можешь создать его:\n<code>Рар создай плейлист {html_escape(pl_name)}</code>", parse_mode="HTML")
+            return
+        pid, pname, pl_owner, track_nums = pl
+        if user_id != pl_owner and user_id != owner_id:
+            await update.message.reply_text("Это не твой плейлист! Нельзя так делать!!!")
+            return
+        perf = target.performer.strip() if target.performer else ""
+        title = target.title.strip() if target.title else ""
+        track_title = f"{perf} - {title}" if perf and title else (target.file_name or "Неизвестный трек")
+        save_track_to_db(target.file_id, track_title, user_id)
+        tn = get_track_num(target.file_id)
+        if not tn:
+            await update.message.reply_text("Что-то пошло не так, попробуй ещё раз")
+            return
+        result = add_track_to_playlist(pid, tn)
+        if result == "already":
+            await update.message.reply_text("Вообще то этот трек уже в плейлисте")
+        elif result == "limit":
+            await update.message.reply_text(f"В плейлисте уже максимум песен ({PLAYLIST_LIMIT})!")
+        elif result == "ok":
+            await update.message.reply_text(f"✨ Добавила трек в плейлист <b>{html_escape(pname)}</b>!", parse_mode="HTML")
+        else:
+            await update.message.reply_text("Не получилось добавить трек")
+        return
+
+    # ===== РАР ДОБАВЬ (общая коллекция) =====
+    if re.match(r"^(рар|rar),?\s+добав(ь|ить)$", incoming) or incoming in ["добавь", "добавить"]:
         target = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
             target = update.message.reply_to_message.audio
@@ -486,11 +720,11 @@ async def handle_message(update, context):
                         cap = f"{track_title}\n\nДобавил: @{username}" if username else track_title
                         if len(cap) > 1020: cap = cap[:1017] + "..."
                         await context.bot.send_audio(chat_id=storage, audio=target.file_id, caption=cap)
-                    except Exception as e: print(f"[STORAGE] {e}")
+                    except Exception: pass
                 try:
                     await context.bot.send_audio(chat_id=chat_id, audio=target.file_id,
                         caption=f"✨ Я занесла этот трек в коллекцию!\n\nИмя в базе: {track_title}")
-                except Exception as e: print(f"[ADD REPLY] {e}")
+                except Exception: pass
             else:
                 await update.message.reply_text(f"Этот трек уже бережно сохранен в моей коллекции под именем: {track_title}")
         else:
@@ -501,43 +735,227 @@ async def handle_message(update, context):
     text = update.message.text
     clean = text.lower().strip()
 
+    # ===== РАР КОМАНДЫ =====
     if clean in ["рар команды", "rar команды", "рар, команды", "rar, команды"]:
         await update.message.reply_text(
             "<b>Список доступных команд Rar:</b>\n\n"
             "<b>Музыкальная коллекция:</b>\n"
-            "• <code>Рар добавь</code> (ответом на аудио) – занести трек в коллекцию\n"
+            "• <code>Рар добавь</code> / <code>Рар добавить</code> (ответом на аудио) – занести трек в коллекцию\n"
             "• <code>Рар дай песню</code> – отправить случайную песню\n"
-            "• <code>Рар найди</code> [название] – найти сохранённый трек\n"
+            "• <code>Рар найди</code> [название] – найти трек\n"
             "• <code>Рар топ песен</code> – топ-10 самых искомых треков\n\n"
-            "<b>Настройки чата (только для админов):</b>\n"
-            "• <code>Рар вкл приветствие</code> / <code>Рар выкл приветствие</code>\n"
-            "• <code>Рар вкл прощание</code> / <code>Рар выкл прощание</code>\n"
-            "• <code>Рар измени приветствие</code> [текст]\n"
-            "• <code>Рар измени прощание</code> [текст]\n\n"
-            "<b>Переменные в текстах приветствия и прощания:</b>\n"
-            "• <code>%имя%</code> или <code>%user%</code> – имя пользователя\n"
-            "• <code>%чат%</code> или <code>%chat%</code> – название чата\n\n"
+            "<b>Плейлисты:</b>\n"
+            "• <code>Рар создай плейлист</code> [название] – создать плейлист\n"
+            "• <code>Рар добавь в</code> [плейлист] (ответом на аудио) – добавить трек\n"
+            "• <code>Рар удали</code> [песня] <code>из</code> [плейлист] – удалить трек из плейлиста\n"
+            "• <code>Рар удали</code> [плейлист] – удалить плейлист\n"
+            "• <code>Рар переименуй</code> [плейлист] <code>в</code> [новое имя]\n"
+            "• <code>Рар мои плейлисты</code> – список твоих плейлистов\n"
+            "• <code>Рар дай плейлист</code> – случайный плейлист\n"
+            "• <code>Рар найди плейлист</code> [название]\n"
+            "• <code>Рар топ плейлистов</code> – топ-10\n\n"
+            "<b>Настройки чата (только админы):</b>\n"
+            "• <code>Рар вкл/выкл приветствие</code>\n"
+            "• <code>Рар вкл/выкл прощание</code>\n"
+            "• <code>Рар измени приветствие/прощание</code> [текст]\n\n"
             "<b>Администрирование:</b>\n"
-            "• <code>калл</code> – тег участников по 6 человек (только для админов)\n\n"
-            "<b>Инлайн-режим (работает в любом чате):</b>\n"
+            "• <code>калл</code> – тег участников по 6 человек\n\n"
+            "<b>Инлайн-режим:</b>\n"
             "• <code>@ChRarBot</code> – 10 случайных треков\n"
-            "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 20 случайных треков\n"
-            "• <code>@ChRarBot</code> [текст] / <code>найди</code> [текст] / <code>трек</code> [текст] – поиск по коллекции\n"
-            "• <code>@ChRarBot монетка</code> / <code>подкинь монетку</code> – бросок монетки\n\n"
+            "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 20 случайных\n"
+            "• <code>@ChRarBot плейлист</code> [название] – треки из плейлиста\n"
+            "• <code>@ChRarBot</code> [текст] / <code>найди</code> [текст] – поиск\n"
+            "• <code>@ChRarBot монетка</code> – бросок монетки\n\n"
             "<b>Развлечения:</b>\n"
-            "• <code>Рар подкинь монетку</code> – сыграть в орла или решку\n"
-            "• <code>Рар что делаешь</code> – узнать, чем занята Rar\n"
-            "• <code>Rar</code> – проверка работы бота",
-            parse_mode="HTML"
-        )
+            "• <code>Рар подкинь монетку</code>\n"
+            "• <code>Рар что делаешь</code>\n"
+            "• <code>Rar</code> – проверка",
+            parse_mode="HTML")
         return
 
-    # ТОП ПЕСЕН
+    # ===== РАР СОЗДАЙ ПЛЕЙЛИСТ =====
+    create_pl = re.match(r"^(рар|rar),?\s+созда(й|ть)\s+плейлист\s+(.+)$", clean)
+    if create_pl:
+        pl_name = text.strip()[len(text.strip()) - len(text.strip().split('плейлист', 1)[-1].strip()):].strip()
+        pl_name = text.split('плейлист', 1)[-1].strip() if 'плейлист' in text else ""
+        if not pl_name:
+            await update.message.reply_text("Напиши название плейлиста после команды")
+            return
+        pid, err = create_playlist(pl_name, user_id)
+        if err == "exists":
+            await update.message.reply_text("Плейлист с таким названием уже есть, придумай что нибудь новое!")
+            return
+        if err:
+            await update.message.reply_text(f"Ошибка: {err}")
+            return
+        await update.message.reply_text(f"✨ Плейлист <b>{html_escape(pl_name)}</b> создан!", parse_mode="HTML")
+        uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
+        await notify_moderation(context, f"📋 <b>Создан новый плейлист!</b>\n\nНазвание: {html_escape(pl_name)}\nСоздатель: {html_escape(uname)} [ID: {user_id}]")
+        return
+
+    # ===== РАР МОИ ПЛЕЙЛИСТЫ =====
+    if clean in ["рар мои плейлисты", "rar мои плейлисты", "рар, мои плейлисты", "rar, мои плейлисты"]:
+        pls = get_user_playlists(user_id)
+        if not pls:
+            await update.message.reply_text("У тебя пока нет плейлистов. Создай первый: <code>Рар создай плейлист Мой топ</code>", parse_mode="HTML")
+            return
+        lines = ["✨ Твои плейлисты:\n"]
+        for pid, name, track_nums in pls:
+            cnt = len(track_nums) if track_nums else 0
+            lines.append(f"• {name} — {cnt} треков")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # ===== РАР ДАЙ ПЛЕЙЛИСТ =====
+    if clean in ["рар дай плейлист", "rar дай плейлист", "рар, дай плейлист", "rar, дай плейлист"]:
+        result = get_random_playlist_with_tracks(user_id)
+        if not result:
+            await update.message.reply_text("Пока нет ни одного плейлиста с треками. Создай свой первым!")
+            return
+        pid, pname, pl_owner, track_nums = result
+        built = build_playlist_message(pid, 0)
+        if not built:
+            await update.message.reply_text("Ошибка плейлиста, попробуй другой")
+            return
+        text_msg, fid, kb = built
+        try:
+            await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb)
+        except Exception as e:
+            await log_to_owner(context, f"[PL SEND ERROR] {e}")
+        return
+
+    # ===== РАР НАЙДИ ПЛЕЙЛИСТ =====
+    find_pl = re.match(r"^(рар|rar),?\s+най(ди|ти)\s+плейлист\s+(.+)$", clean)
+    if find_pl:
+        pl_name = text.split('плейлист', 1)[-1].strip() if 'плейлист' in text else ""
+        if not pl_name:
+            await update.message.reply_text("Напиши название плейлиста")
+            return
+        pl = get_playlist_by_name(pl_name)
+        if not pl:
+            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>, можешь создать такой:\n<code>Рар создай плейлист {html_escape(pl_name)}</code>", parse_mode="HTML")
+            return
+        pid, pname, pl_owner, track_nums = pl
+        if not track_nums:
+            await update.message.reply_text("Плейлист пуст!")
+            return
+        increment_playlist_search(pid)
+        built = build_playlist_message(pid, 0)
+        if not built:
+            await update.message.reply_text("Ошибка плейлиста")
+            return
+        text_msg, fid, kb = built
+        try:
+            await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb)
+        except Exception as e:
+            await log_to_owner(context, f"[PL SEND ERROR] {e}")
+        return
+
+    # ===== РАР ТОП ПЛЕЙЛИСТОВ =====
+    if clean in ["рар топ плейлистов", "rar топ плейлистов", "рар, топ плейлистов", "rar, топ плейлистов"]:
+        top = get_top_playlists(limit=10)
+        if not top:
+            await update.message.reply_text("Пока никто не искал плейлисты... Топ пуст!")
+            return
+        lines = ["\n✨ Топ 10 плейлистов!!!\n"]
+        for i, (name, searches) in enumerate(top, 1):
+            if i <= 3:
+                lines.append(f"✨{i}. {name} ({searches})✨")
+            else:
+                lines.append(f"• {i}. {name} ({searches})")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    # ===== РАР УДАЛИ X ИЗ Y =====
+    del_from = re.match(r"^(рар|rar),?\s+удал(и|ить)\s+(.+?)\s+из\s+(.+)$", clean)
+    if del_from:
+        track_query = del_from.group(3).strip()
+        pl_name = del_from.group(4).strip()
+        pl = get_playlist_by_name(pl_name)
+        if not pl:
+            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML")
+            return
+        pid, pname, pl_owner, track_nums = pl
+        if user_id != pl_owner and user_id != owner_id:
+            await update.message.reply_text("Да что ты себе позволяешь?! Это не твой плейлист!!!!!!")
+            return
+        if not track_nums:
+            await update.message.reply_text("Плейлист пуст")
+            return
+        tracks = get_tracks_by_nums(track_nums)
+        found_tn = None
+        for tn, fid, title in [(t[0] if len(t) > 2 else None, t[0], t[1]) for t in tracks]:
+            pass
+        # Правильный поиск
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("SELECT track_num, title FROM channel_music WHERE track_num = ANY(%s) AND LOWER(title) LIKE LOWER(%s)", (track_nums, f"%{track_query}%"))
+        found = cursor.fetchone(); cursor.close(); conn.close()
+        if not found:
+            await update.message.reply_text(f"Не нашла {track_query} в плейлисте {pl_name}")
+            return
+        found_tn, found_title = found
+        remove_track_from_playlist(pid, found_tn)
+        await update.message.reply_text(f"✅ Убрала {found_title} из плейлиста {pl_name}")
+        return
+
+    # ===== РАР УДАЛИ ПЛЕЙЛИСТ =====
+    del_pl = re.match(r"^(рар|rar),?\s+удал(и|ить)\s+(.+)$", clean)
+    if del_pl:
+        pl_name = del_pl.group(3).strip()
+        pl = get_playlist_by_name(pl_name)
+        if not pl:
+            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML")
+            return
+        pid, pname, pl_owner, track_nums = pl
+        if user_id != pl_owner and user_id != owner_id:
+            await update.message.reply_text("Да что ты себе позволяешь?! Это не твой плейлист!!!!!!")
+            return
+        delete_playlist(pid)
+        await update.message.reply_text(f"✅ Плейлист <b>{html_escape(pname)}</b> удалён", parse_mode="HTML")
+        return
+
+    # ===== РАР ПЕРЕИМЕНУЙ =====
+    ren_pl = re.match(r"^(рар|rar),?\s+переимену(й|ть)\s+(.+?)\s+в\s+(.+)$", clean)
+    if ren_pl:
+        old_name = ren_pl.group(3).strip()
+        new_name = ren_pl.group(4).strip()
+        pl = get_playlist_by_name(old_name)
+        if not pl:
+            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(old_name)}</b>", parse_mode="HTML")
+            return
+        pid, pname, pl_owner, track_nums = pl
+        if user_id != pl_owner and user_id != owner_id:
+            await update.message.reply_text("Да что ты себе позволяешь?! Это не твой плейлист!!!!!!")
+            return
+        err = rename_playlist(pid, new_name)
+        if err == "exists":
+            await update.message.reply_text("Плейлист с таким названием уже есть, придумай что нибудь новое!")
+            return
+        await update.message.reply_text(f"✅ Плейлист переименован: <b>{html_escape(old_name)}</b> → <b>{html_escape(new_name)}</b>", parse_mode="HTML")
+        return
+
+    # ===== РАР УДАЛИ (трек из коллекции, только owner) =====
+    if clean in DELETE_COMMANDS:
+        if owner_id is None or user_id != owner_id:
+            await update.message.reply_text("Эта команда доступна только моему создателю!")
+            return
+        if not update.message.reply_to_message or not update.message.reply_to_message.audio:
+            await update.message.reply_text("Ответь этой командой на сообщение с треком, который хочешь удалить")
+            return
+        fid = update.message.reply_to_message.audio.file_id
+        deleted = delete_track_from_db(fid)
+        if deleted:
+            await update.message.reply_text(f"✅ Трек удалён: {deleted}")
+        else:
+            await update.message.reply_text("❌ Такого трека нет в моей коллекции")
+        return
+
+    # ===== ТОП ПЕСЕН =====
     if clean in ["рар топ песен", "rar топ песен", "рар, топ песен", "rar, топ песен", "рар топ песни", "rar топ песни"]:
         try:
             top = get_top_tracks(limit=10)
             if not top:
-                await update.message.reply_text("Пока никто ничего не искал... Топ пуст!");
+                await update.message.reply_text("Пока никто ничего не искал... Топ пуст!")
                 return
             lines = ["\n✨ Топ 10 треков в моей коллекции!!!\n"]
             for i, (title, plays) in enumerate(top, 1):
@@ -550,6 +968,7 @@ async def handle_message(update, context):
             await log_to_owner(context, f"[ТОП ПЕСЕН ERROR] {e}\n{traceback.format_exc()[:1200]}")
         return
 
+    # ===== НАСТРОЙКИ ЧАТА =====
     toggle_map = {
         "рар вкл приветствие": ("greet_enabled", True, "Приветствие новичков включено!"),
         "рар, вкл приветствие": ("greet_enabled", True, "Приветствие новичков включено!"),
@@ -604,20 +1023,7 @@ async def handle_message(update, context):
             await update.message.reply_text(f"Текст прощания обновлён:\n\n{new_text}")
         return
 
-    if clean in DELETE_COMMANDS:
-        owner_id = get_owner_id()
-        if owner_id is None or user_id != owner_id:
-            await update.message.reply_text("Эта команда доступна только моему создателю!"); return
-        if not update.message.reply_to_message or not update.message.reply_to_message.audio:
-            await update.message.reply_text("Ответь этой командой на сообщение с треком, который хочешь удалить"); return
-        fid = update.message.reply_to_message.audio.file_id
-        deleted = delete_track_from_db(fid)
-        if deleted:
-            await update.message.reply_text(f"✅ Трек удалён: {deleted}")
-        else:
-            await update.message.reply_text("❌ Такого трека нет в моей коллекции")
-        return
-
+    # ===== РАЗВЛЕЧЕНИЯ =====
     if clean in ["rar", "рар"]:
         if chat_id not in rar_replies_history: rar_replies_history[chat_id] = []
         avail = [a for a in answers_rar if a not in rar_replies_history[chat_id]] or answers_rar
@@ -684,6 +1090,7 @@ async def handle_message(update, context):
             await update.message.reply_text(f"⚠️ Ошибка в блоке рандома музыки: {e}")
         return
 
+    # ===== КАЛЛ =====
     if clean == "калл":
         if chat_id >= 0:
             await update.message.reply_text("Эта команда доступна только в группах"); return
@@ -695,19 +1102,12 @@ async def handle_message(update, context):
             await log_to_owner(context, f"[КАЛЛ ADMIN CHECK ERROR] {e}"); return
 
         try:
-            chat_info = await context.bot.get_chat(chat_id)
-            await log_to_owner(context, f"[КАЛЛ PRE-CHECK OK] chat={chat_info.title}")
-        except Exception as e:
-            await update.message.reply_text("Не удалось получить данные о чате. Попробуй позже")
-            await log_to_owner(context, f"[КАЛЛ PRE-CHECK ERROR] {e}"); return
-
-        try:
             user_ids = get_chat_members(chat_id)
             if not user_ids:
                 await update.message.reply_text("В моей записной книжке пока пусто. Напишите любое слово!"); return
 
             valid = [STATUS_MEMBER, STATUS_ADMINISTRATOR, STATUS_CREATOR, STATUS_RESTRICTED]
-            tags, to_remove, errors = [], [], []
+            tags, to_remove = [], []
 
             for m_id in user_ids:
                 m_id_int = int(m_id)
@@ -718,15 +1118,11 @@ async def handle_message(update, context):
                     err = str(e).lower()
                     if "not found" in err or "participant not found" in err:
                         to_remove.append(m_id_int); continue
-                    errors.append(f"id={m_id_int}: {str(e)[:80]}"); continue
-
+                    continue
                 if member.status == STATUS_LEFT:
                     to_remove.append(m_id_int); continue
-                if member.status in (STATUS_KICKED, STATUS_BANNED):
-                    continue
-                if member.status not in valid:
-                    continue
-
+                if member.status in (STATUS_KICKED, STATUS_BANNED): continue
+                if member.status not in valid: continue
                 uname = member.user.username
                 fname = member.user.first_name or "друг"
                 display = f"@{uname}" if uname else fname
@@ -736,8 +1132,7 @@ async def handle_message(update, context):
                 try:
                     remove_users_from_chat_batch(to_remove, chat_id)
                     for uid in to_remove: uncache_user(uid, chat_id)
-                except Exception as e:
-                    pass
+                except Exception: pass
 
             if not tags:
                 await update.message.reply_text("В моей книжке нет активных участников для тега!"); return
@@ -746,12 +1141,12 @@ async def handle_message(update, context):
                 chunk = tags[i:i+6]
                 try:
                     await update.message.reply_text("<b>Минуточку внимания!!!</b>\n\n" + "\n".join(chunk), parse_mode="HTML")
-                except Exception as e:
-                    pass
+                except Exception: pass
         except Exception as e:
             await log_to_owner(context, f"[КАЛЛ FATAL] {e}\n{traceback.format_exc()[:1200]}")
         return
 
+    # ===== НАЙДИ ТРЕК =====
     if clean.startswith("rar найди ") or clean.startswith("рар найди "):
         query = text[9:].strip()
         if not query:
@@ -763,12 +1158,14 @@ async def handle_message(update, context):
             await status_msg.delete()
             try:
                 await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"✨ Вот что нашла у себя в коллекции: {ttitle}\n\nЗапрос: {query}")
-                increment_play(fid)  # ← СЧИТАЕМ ПРОСЛУШИВАНИЕ
+                increment_play(fid)
             except Exception as e: print(f"[FIND SEND] {e}")
             return
         else:
             await status_msg.edit_text("К сожалению, такой песни в моей коллекции пока нет")
 
+
+# ==================== CHAT_MEMBER ====================
 
 async def handle_chat_member(update, context):
     try:
@@ -792,24 +1189,19 @@ async def handle_chat_member(update, context):
         if old_status in LEAVE_STATUSES and new_status in IN_CHAT_STATUSES:
             try:
                 save_user_to_chat(user.id, chat_id); cache_user(user.id, chat_id)
-            except Exception as e:
-                pass
+            except Exception: pass
             if greet_enabled:
                 try:
                     await context.bot.send_message(chat_id=chat_id, text=substitute_vars(greet_text, user_name, chat_title))
-                except Exception as e:
-                    pass
-
+                except Exception: pass
         elif old_status in IN_CHAT_STATUSES and new_status in LEAVE_STATUSES:
             try:
                 remove_user_from_chat(user.id, chat_id); uncache_user(user.id, chat_id)
-            except Exception as e:
-                pass
+            except Exception: pass
             if farewell_enabled:
                 try:
                     await context.bot.send_message(chat_id=chat_id, text=substitute_vars(farewell_text, user_name, chat_title))
-                except Exception as e:
-                    pass
+                except Exception: pass
     except Exception as e:
         print(f"[CHAT_MEMBER FATAL] {e}")
 
@@ -827,27 +1219,22 @@ async def handle_my_chat_member(update, context):
         if new_status in LEAVE_STATUSES:
             try:
                 remove_chat_data(chat_id)
-                await log_to_owner(context, f"[CLEANUP] Бот покинул чат {chat_id}, данные удалены")
-            except Exception as e:
-                pass
+            except Exception: pass
             return
 
         if old_status not in ADMIN_STATUSES and new_status in ADMIN_STATUSES:
             try:
                 await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
-            except Exception as e:
-                pass
+            except Exception: pass
             return
 
         if old_status in ADMIN_STATUSES and new_status not in ADMIN_STATUSES:
             try:
                 await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
-            except Exception as e:
-                pass
+            except Exception: pass
             return
 
         if old_status not in IN_CHAT_STATUSES and new_status in IN_CHAT_STATUSES:
-            # Подгрузка админов
             try:
                 admins = await context.bot.get_chat_administrators(chat_id)
                 count = 0
@@ -857,20 +1244,18 @@ async def handle_my_chat_member(update, context):
                     save_user_to_chat(admin.user.id, chat_id)
                     cache_user(admin.user.id, chat_id)
                     count += 1
-                await log_to_owner(context, f"[RETURN] Подгружено {count} админов в чат {chat_id}")
-            except Exception as e:
-                await log_to_owner(context, f"[RETURN ADMINS ERROR] {e}")
-
+            except Exception: pass
             text = ("Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
                     "Для моей корректной работы в чате предоставьте мне права админа, спасибо!\n\n"
                     "Чтобы узнать, на что я способна, напишите в чате <code>Рар команды</code> после выдачи мне прав.")
             try:
                 await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-            except Exception as e:
-                pass
+            except Exception: pass
     except Exception as e:
         print(f"[MY_CHAT_MEMBER FATAL] {e}")
 
+
+# ==================== ФОНОВЫЕ ЗАДАЧИ ====================
 
 async def daily_track_loop(app):
     await asyncio.sleep(60)
@@ -883,8 +1268,8 @@ async def daily_track_loop(app):
                     fid, title = random.choice(tracks)
                     try:
                         await app.bot.send_audio(chat_id=notify, audio=fid, caption=f"🎵 Ежедневный трек:\n{title}")
-                    except Exception as e: pass
-        except Exception as e: pass
+                    except Exception: pass
+        except Exception: pass
         await asyncio.sleep(86400)
 
 
@@ -947,11 +1332,12 @@ def main():
     app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
+    app.add_handler(CallbackQueryHandler(playlist_nav_handler, pattern=r"^pl_\d+_\d+$"))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     print("Запуск бота...")
     app.run_polling(allowed_updates=[
         "message", "chat_member", "my_chat_member",
-        "inline_query", "chosen_inline_result"
+        "inline_query", "chosen_inline_result", "callback_query"
     ])
 
 
