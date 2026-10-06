@@ -69,6 +69,7 @@ def init_db():
         file_id TEXT PRIMARY KEY, title TEXT NOT NULL,
         added_by BIGINT, added_at TIMESTAMP DEFAULT NOW())""")
     cursor.execute("ALTER TABLE channel_music ADD COLUMN IF NOT EXISTS track_num SERIAL")
+    cursor.execute("ALTER TABLE channel_music ADD COLUMN IF NOT EXISTS inline_broken BOOLEAN DEFAULT FALSE")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_music_track_num ON channel_music(track_num)")
     cursor.execute("""CREATE TABLE IF NOT EXISTS track_stats (
         track_num INTEGER PRIMARY KEY REFERENCES channel_music(track_num) ON DELETE CASCADE,
@@ -111,13 +112,31 @@ def search_track_in_db_by_title(title):
 
 def search_tracks_in_db(query, limit=20):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT file_id, title, track_num FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) LIMIT %s", (f"%{query.strip().lower()}%", limit))
+    cursor.execute("SELECT file_id, title, track_num FROM channel_music WHERE LOWER(title) LIKE LOWER(%s) AND inline_broken = FALSE LIMIT %s", (f"%{query.strip().lower()}%", limit))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
-def get_all_tracks_from_db():
+def get_all_tracks_from_db(only_ok=False):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT file_id, title FROM channel_music")
+    if only_ok:
+        cursor.execute("SELECT file_id, title FROM channel_music WHERE inline_broken = FALSE")
+    else:
+        cursor.execute("SELECT file_id, title FROM channel_music")
+    rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
+
+
+def mark_track_broken(file_id):
+    try:
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("UPDATE channel_music SET inline_broken = TRUE WHERE file_id = %s", (file_id,))
+        conn.commit(); cursor.close(); conn.close()
+    except Exception as e:
+        print(f"[MARK BROKEN ERROR] {e}")
+
+
+def get_broken_tracks():
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT track_num, title FROM channel_music WHERE inline_broken = TRUE ORDER BY track_num")
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
@@ -151,7 +170,7 @@ def get_track_by_num(track_num):
 def get_tracks_by_nums(track_nums):
     if not track_nums: return []
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT track_num, file_id, title FROM channel_music WHERE track_num = ANY(%s)", (track_nums,))
+    cursor.execute("SELECT track_num, file_id, title FROM channel_music WHERE track_num = ANY(%s) AND inline_broken = FALSE", (track_nums,))
     rows = cursor.fetchall(); cursor.close(); conn.close()
     mapping = {r[0]: (r[1], r[2]) for r in rows}
     return [mapping[tn] for tn in track_nums if tn in mapping]
@@ -391,7 +410,7 @@ def pick_random_with_antirepeat(user_id, limit):
     if len(seen) > INLINE_SEEN_LIMIT:
         sorted_items = sorted(seen.items(), key=lambda x: x[1])
         seen = dict(sorted_items[-INLINE_SEEN_LIMIT:])
-    all_tracks = get_all_tracks_from_db()
+    all_tracks = get_all_tracks_from_db(only_ok=True)
     if not all_tracks:
         inline_seen[user_id] = seen; return []
     available = [t for t in all_tracks if t[0] not in seen]
@@ -426,6 +445,46 @@ async def notify_moderation(context, text):
         await context.bot.send_message(chat_id=MODERATION_CHAT_ID, text=text, parse_mode="HTML")
     except Exception as e:
         print(f"[MODERATION NOTIFY ERROR] {e}")
+
+
+async def safe_answer_inline(update, context, results, cache_time=0):
+    """Пробует ответить на inline_query. При Audio_content_type_invalid удаляет проблемные треки."""
+    if not results:
+        try:
+            await update.inline_query.answer([], cache_time=cache_time)
+        except Exception:
+            pass
+        return
+    tried = list(results)
+    removed_ids = []
+    while tried:
+        try:
+            await update.inline_query.answer(tried, cache_time=cache_time)
+            if removed_ids:
+                await log_to_owner(context, f"[INLINE REMOVED] {len(removed_ids)} проблемных:\n" + "\n".join(removed_ids))
+            return
+        except Exception as e:
+            err = str(e)
+            if "content_type_invalid" in err.lower() or "Audio_content_type" in err:
+                removed = tried.pop()
+                # Пытаемся найти file_id в кэше
+                fid_removed = None
+                if hasattr(removed, 'id') and removed.id in inline_result_cache:
+                    fid_removed, _ = inline_result_cache[removed.id]
+                if fid_removed:
+                    mark_track_broken(fid_removed)
+                removed_ids.append(getattr(removed, 'id', '?'))
+            else:
+                await log_to_owner(context, f"[INLINE FATAL] {err}\n{traceback.format_exc()[:800]}")
+                try:
+                    await update.inline_query.answer([], cache_time=cache_time)
+                except Exception:
+                    pass
+                return
+    try:
+        await update.inline_query.answer([], cache_time=cache_time)
+    except Exception:
+        pass
 
 
 saved_users_cache = OrderedDict()
@@ -508,7 +567,7 @@ async def inline_query_handler(update, context):
                 thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
-            await update.inline_query.answer(results, cache_time=0)
+            await safe_answer_inline(update, context, results, cache_time=0)
 
         elif query in ["дай песню", "песня", "музыка"]:
             tracks = pick_random_with_antirepeat(user_id, limit=20)
@@ -522,7 +581,7 @@ async def inline_query_handler(update, context):
                 thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
-            await update.inline_query.answer(results, cache_time=0)
+            await safe_answer_inline(update, context, results, cache_time=0)
 
         elif query.startswith("плейлист "):
             pl_name = query[9:].strip()
@@ -541,7 +600,7 @@ async def inline_query_handler(update, context):
                 inline_result_cache[rid] = (fid, time.time())
                 results.append(InlineQueryResultCachedAudio(
                     id=rid, audio_file_id=fid, caption=clean_title(title)))
-            await update.inline_query.answer(results, cache_time=0)
+            await safe_answer_inline(update, context, results, cache_time=0)
 
         elif query.startswith("найди ") or query.startswith("трек "):
             search = query[6:].strip()
@@ -553,7 +612,7 @@ async def inline_query_handler(update, context):
                 inline_result_cache[rid] = (fid, time.time())
                 results.append(InlineQueryResultCachedAudio(
                     id=rid, audio_file_id=fid, caption=clean_title(title)))
-            await update.inline_query.answer(results, cache_time=0)
+            await safe_answer_inline(update, context, results, cache_time=0)
 
         elif query.startswith("монетка") or query.startswith("подкинь монетку"):
             if random.randint(1, 50) == 50:
@@ -563,7 +622,7 @@ async def inline_query_handler(update, context):
             results.append(InlineQueryResultArticle(
                 id="coin", title="🎲 Бросить монетку", thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent(coin_text)))
-            await update.inline_query.answer(results, cache_time=0)
+            await safe_answer_inline(update, context, results, cache_time=0)
 
         else:
             tracks = search_tracks_in_db(query, limit=20)
@@ -572,10 +631,10 @@ async def inline_query_handler(update, context):
                 inline_result_cache[rid] = (fid, time.time())
                 results.append(InlineQueryResultCachedAudio(
                     id=rid, audio_file_id=fid, caption=clean_title(title)))
-            await update.inline_query.answer(results, cache_time=0)
+            await safe_answer_inline(update, context, results, cache_time=0)
 
     except Exception as e:
-        await log_to_owner(context, f"[INLINE FATAL] q='{query}'\n{e}\n{traceback.format_exc()[:1200]}")
+        await log_to_owner(context, f"[INLINE OUTER] q='{query}'\n{e}\n{traceback.format_exc()[:800]}")
         try:
             await update.inline_query.answer([], cache_time=0)
         except Exception:
@@ -604,9 +663,15 @@ def build_playlist_message(pid, index):
     if not pl: return None
     pid_, name, owner_id, track_nums = pl
     if not track_nums: return None
-    total = len(track_nums)
+    # Фильтруем битые треки
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT track_num, file_id, title FROM channel_music WHERE track_num = ANY(%s) AND inline_broken = FALSE", (track_nums,))
+    rows = cursor.fetchall(); cursor.close(); conn.close()
+    if not rows: return None
+    ok_nums = [r[0] for r in rows]
+    total = len(ok_nums)
     index = index % total
-    tn = track_nums[index]
+    tn = ok_nums[index]
     track = get_track_by_num(tn)
     if not track: return None
     fid, title = track
@@ -773,7 +838,8 @@ async def handle_message(update, context):
             "• <code>Рар вкл/выкл прощание</code>\n"
             "• <code>Рар измени приветствие/прощание</code> [текст]\n\n"
             "<b>Администрирование:</b>\n"
-            "• <code>калл</code>\n\n"
+            "• <code>калл</code>\n"
+            "• <code>Рар проблемные</code> (только для создателя)\n\n"
             "<b>Инлайн-режим:</b>\n"
             "• <code>@ChRarBot</code> – 10 случайных треков\n"
             "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 20 случайных\n"
@@ -785,6 +851,23 @@ async def handle_message(update, context):
             "• <code>Рар что делаешь</code>\n"
             "• <code>Rar</code>",
             parse_mode="HTML")
+        return
+
+    # ===== РАР ПРОБЛЕМНЫЕ =====
+    if clean in ["рар проблемные", "rar проблемные", "рар, проблемные", "rar, проблемные"]:
+        if user_id != owner_id:
+            await update.message.reply_text("Эта команда доступна только моему создателю!")
+            return
+        broken = get_broken_tracks()
+        if not broken:
+            await update.message.reply_text("Проблемных треков нет — инлайн работает чисто!")
+            return
+        lines = [f"⚠️ Проблемные треки ({len(broken)}):\n"]
+        for tn, title in broken[:30]:
+            lines.append(f"• №{tn}: {title}")
+        if len(broken) > 30:
+            lines.append(f"...и ещё {len(broken) - 30}")
+        await update.message.reply_text("\n".join(lines))
         return
 
     # ===== РАР СОЗДАЙ ПЛЕЙЛИСТ =====
@@ -920,6 +1003,8 @@ async def handle_message(update, context):
             return
         delete_playlist(pid)
         await update.message.reply_text(f"Плейлист <b>{html_escape(pname)}</b> удалён", parse_mode="HTML")
+        uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
+        await notify_moderation(context, f"🗑 <b>Удалён плейлист!</b>\n\nНазвание: {html_escape(pname)}\nКто: {html_escape(uname)} [ID: {user_id}]")
         return
 
     # ===== РАР ПЕРЕИМЕНУЙ =====
@@ -940,6 +1025,8 @@ async def handle_message(update, context):
             await update.message.reply_text("Плейлист с таким названием уже есть, придумай что нибудь новое!")
             return
         await update.message.reply_text(f"Плейлист переименован: <b>{html_escape(old_name)}</b> → <b>{html_escape(new_name)}</b>", parse_mode="HTML")
+        uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
+        await notify_moderation(context, f"📝 <b>Переименован плейлист!</b>\n\nБыло: {html_escape(old_name)}\nСтало: {html_escape(new_name)}\nКто: {html_escape(uname)} [ID: {user_id}]")
         return
 
     # ===== РАР УДАЛИ (трек из коллекции, только owner) =====
@@ -1082,7 +1169,7 @@ async def handle_message(update, context):
 
     if clean in ["rar дай песню","рар дай песню","rar дай музыку","рар дай музыку","rar, дай песню","рар, дай песню","rar, дай музыку","рар, дай музыку"]:
         try:
-            tracks = get_all_tracks_from_db()
+            tracks = get_all_tracks_from_db(only_ok=True)
             if not tracks:
                 await update.message.reply_text("В моей коллекции пока нет ни одной сохраненной песни. Админы, добавьте музыку!"); return
             if chat_id not in recent_tracks_history or not isinstance(recent_tracks_history[chat_id], list):
@@ -1277,7 +1364,7 @@ async def daily_track_loop(app):
         try:
             notify = get_notify_chat_id()
             if notify:
-                tracks = get_all_tracks_from_db()
+                tracks = get_all_tracks_from_db(only_ok=True)
                 if tracks:
                     fid, title = random.choice(tracks)
                     try:
