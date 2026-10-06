@@ -476,21 +476,6 @@ FAREWELL_PREFIXES = ["рар измени прощание","рар, измен�
 DELETE_COMMANDS = ["рар удали","рар, удали","rar удали","rar, удали","рар удалить","рар, удалить","rar удалить","rar, удалить"]
 
 
-def parse_rar_command(text):
-    """Парсит 'Рар [глагол] [аргументы]'. Возвращает (verb, args) или (None, None)."""
-    if not text: return None, None
-    t = text.strip()
-    # Проверяем начало: Рар / Rar с запятой или без
-    m = re.match(r"^(рар|rar)[,.]?\s+(.+)$", t, re.IGNORECASE)
-    if not m: return None, None
-    rest = m.group(2).strip()
-    # Первое слово — глагол
-    parts = rest.split(None, 1)
-    verb = parts[0].lower()
-    args = parts[1].strip() if len(parts) > 1 else ""
-    return verb, args
-
-
 # ==================== СТАРТ ====================
 
 async def start_command(update, context):
@@ -895,11 +880,10 @@ async def handle_message(update, context):
         return
 
     # ===== РАР УДАЛИ X ИЗ Y =====
-    del_from = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+?)\s+из\s+(.+)$", text, re.IGNORECASE)
+    del_from = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+?)\s+из\s+(?:плейлист[а]?\s+)?(.+)$", text, re.IGNORECASE)
     if del_from:
         track_query = del_from.group(3).strip()
         pl_name = del_from.group(4).strip()
-        await log_to_owner(context, f"[DEL_FROM] text='{text}'\ntrack='{track_query}'\npl='{pl_name}'")
         pl = get_playlist_by_name(pl_name)
         if not pl:
             await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML")
@@ -923,12 +907,10 @@ async def handle_message(update, context):
         return
 
     # ===== РАР УДАЛИ ПЛЕЙЛИСТ =====
-    del_pl = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+)$", text, re.IGNORECASE)
+    del_pl = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(?:плейлист\s+)?(.+)$", text, re.IGNORECASE)
     if del_pl:
         pl_name = del_pl.group(3).strip()
-        await log_to_owner(context, f"[DEL_PL] text='{text}'\npl='{pl_name}'")
         pl = get_playlist_by_name(pl_name)
-        await log_to_owner(context, f"[DEL_PL] pl={pl}")
         if not pl:
             await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML")
             return
@@ -941,13 +923,11 @@ async def handle_message(update, context):
         return
 
     # ===== РАР ПЕРЕИМЕНУЙ =====
-    ren_pl = re.match(r"^(рар|rar)[,.]?\s+переимену(й|ть)\s+(.+?)\s+в\s+(.+)$", text, re.IGNORECASE)
+    ren_pl = re.match(r"^(рар|rar)[,.]?\s+переимену(й|ть)\s+(?:плейлист\s+)?(.+?)\s+в\s+(.+)$", text, re.IGNORECASE)
     if ren_pl:
         old_name = ren_pl.group(3).strip()
         new_name = ren_pl.group(4).strip()
-        await log_to_owner(context, f"[REN_PL] text='{text}'\nold='{old_name}'\nnew='{new_name}'")
         pl = get_playlist_by_name(old_name)
-        await log_to_owner(context, f"[REN_PL] pl={pl}")
         if not pl:
             await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(old_name)}</b>", parse_mode="HTML")
             return
@@ -1178,10 +1158,9 @@ async def handle_message(update, context):
         return
 
     # ===== НАЙДИ ТРЕК =====
-    if clean.startswith("rar найди ") or clean.startswith("рар найди ") or clean.startswith("rar найти ") or clean.startswith("рар найти "):
-        m = re.match(r"^(рар|rar)[,.]?\s+най(ди|ти)\s+(.+)$", text, re.IGNORECASE)
-        if not m: return
-        query = m.group(3).strip()
+    find_track = re.match(r"^(рар|rar)[,.]?\s+най(ди|ти)\s+(.+)$", text, re.IGNORECASE)
+    if find_track:
+        query = find_track.group(3).strip()
         if not query:
             await update.message.reply_text("Напиши название песни, например: Rar найди duvet"); return
         status_msg = await update.message.reply_text("Ищу трек в своей коллекции...")
