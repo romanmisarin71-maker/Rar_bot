@@ -197,6 +197,7 @@ def create_playlist(name, owner_id):
 
 
 def get_playlist_by_name(name):
+    if not name: return None
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT playlist_id, name, owner_id, track_nums FROM playlists WHERE LOWER(name) = LOWER(%s)", (name,))
     row = cursor.fetchone(); cursor.close(); conn.close(); return row
@@ -475,6 +476,21 @@ FAREWELL_PREFIXES = ["рар измени прощание","рар, измен�
 DELETE_COMMANDS = ["рар удали","рар, удали","rar удали","rar, удали","рар удалить","рар, удалить","rar удалить","rar, удалить"]
 
 
+def parse_rar_command(text):
+    """Парсит 'Рар [глагол] [аргументы]'. Возвращает (verb, args) или (None, None)."""
+    if not text: return None, None
+    t = text.strip()
+    # Проверяем начало: Рар / Rar с запятой или без
+    m = re.match(r"^(рар|rar)[,.]?\s+(.+)$", t, re.IGNORECASE)
+    if not m: return None, None
+    rest = m.group(2).strip()
+    # Первое слово — глагол
+    parts = rest.split(None, 1)
+    verb = parts[0].lower()
+    args = parts[1].strip() if len(parts) > 1 else ""
+    return verb, args
+
+
 # ==================== СТАРТ ====================
 
 async def start_command(update, context):
@@ -669,11 +685,10 @@ async def handle_message(update, context):
     if update.message.text: incoming = update.message.text.lower().strip()
     elif update.message.caption: incoming = update.message.caption.lower().strip()
 
-    # Определяем text заранее — используется в regex с оригинальным регистром
     text = update.message.text or ""
 
     # ===== РАР ДОБАВЬ В ПЛЕЙЛИСТ =====
-    add_to_pl = re.match(r"^(рар|rar),?\s+добав(ь|ить)\s+в\s+(.+)$", text, re.IGNORECASE)
+    add_to_pl = re.match(r"^(рар|rar)[,.]?\s+добав(ь|ить)\s+в\s+(.+)$", text, re.IGNORECASE)
     if add_to_pl:
         pl_name = add_to_pl.group(3).strip()
         target = None
@@ -718,7 +733,7 @@ async def handle_message(update, context):
         return
 
     # ===== РАР ДОБАВЬ (общая коллекция) =====
-    if re.match(r"^(рар|rar),?\s+добав(ь|ить)$", incoming) or incoming in ["добавь", "добавить"]:
+    if re.match(r"^(рар|rar)[,.]?\s+добав(ь|ить)$", incoming) or incoming in ["добавь", "добавить"]:
         target = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
             target = update.message.reply_to_message.audio
@@ -754,41 +769,41 @@ async def handle_message(update, context):
         await update.message.reply_text(
             "<b>Список доступных команд Rar:</b>\n\n"
             "<b>Музыкальная коллекция:</b>\n"
-            "• <code>Рар добавь</code> / <code>Рар добавить</code> (ответом на аудио) – занести трек в коллекцию\n"
-            "• <code>Рар дай песню</code> – отправить случайную песню\n"
-            "• <code>Рар найди</code> [название] – найти трек\n"
-            "• <code>Рар топ песен</code> – топ-10 самых искомых треков\n\n"
+            "• <code>Рар добавь</code> / <code>Рар добавить</code> (ответом на аудио)\n"
+            "• <code>Рар дай песню</code>\n"
+            "• <code>Рар найди</code> / <code>Рар найти</code> [название]\n"
+            "• <code>Рар топ песен</code>\n\n"
             "<b>Плейлисты:</b>\n"
-            "• <code>Рар создай плейлист</code> [название]\n"
-            "• <code>Рар добавь в</code> [плейлист] (ответом на аудио)\n"
-            "• <code>Рар удали</code> [песня] <code>из</code> [плейлист]\n"
-            "• <code>Рар удали</code> [плейлист]\n"
-            "• <code>Рар переименуй</code> [плейлист] <code>в</code> [новое имя]\n"
+            "• <code>Рар создай плейлист</code> / <code>Рар создать плейлист</code> [название]\n"
+            "• <code>Рар добавь в</code> / <code>Рар добавить в</code> [плейлист] (ответом на аудио)\n"
+            "• <code>Рар удали</code> / <code>Рар удалить</code> [песня] <code>из</code> [плейлист]\n"
+            "• <code>Рар удали</code> / <code>Рар удалить</code> [плейлист]\n"
+            "• <code>Рар переименуй</code> / <code>Рар переименовать</code> [плейлист] <code>в</code> [новое имя]\n"
             "• <code>Рар мои плейлисты</code>\n"
             "• <code>Рар дай плейлист</code>\n"
-            "• <code>Рар найди плейлист</code> [название]\n"
+            "• <code>Рар найди плейлист</code> / <code>Рар найти плейлист</code> [название]\n"
             "• <code>Рар топ плейлистов</code>\n\n"
             "<b>Настройки чата (только админы):</b>\n"
             "• <code>Рар вкл/выкл приветствие</code>\n"
             "• <code>Рар вкл/выкл прощание</code>\n"
             "• <code>Рар измени приветствие/прощание</code> [текст]\n\n"
             "<b>Администрирование:</b>\n"
-            "• <code>калл</code> – тег участников по 6 человек\n\n"
+            "• <code>калл</code>\n\n"
             "<b>Инлайн-режим:</b>\n"
             "• <code>@ChRarBot</code> – 10 случайных треков\n"
             "• <code>@ChRarBot дай песню</code> / <code>песня</code> / <code>музыка</code> – 20 случайных\n"
-            "• <code>@ChRarBot плейлист</code> [название] – треки из плейлиста\n"
-            "• <code>@ChRarBot</code> [текст] / <code>найди</code> [текст] – поиск\n"
-            "• <code>@ChRarBot монетка</code> – бросок монетки\n\n"
+            "• <code>@ChRarBot плейлист</code> [название]\n"
+            "• <code>@ChRarBot найди</code> [текст]\n"
+            "• <code>@ChRarBot монетка</code>\n\n"
             "<b>Развлечения:</b>\n"
             "• <code>Рар подкинь монетку</code>\n"
             "• <code>Рар что делаешь</code>\n"
-            "• <code>Rar</code> – проверка",
+            "• <code>Rar</code>",
             parse_mode="HTML")
         return
 
     # ===== РАР СОЗДАЙ ПЛЕЙЛИСТ =====
-    create_pl = re.match(r"^(рар|rar),?\s+созда(й|ть)\s+плейлист\s+(.+)$", text, re.IGNORECASE)
+    create_pl = re.match(r"^(рар|rar)[,.]?\s+созда(й|ть)\s+плейлист\s+(.+)$", text, re.IGNORECASE)
     if create_pl:
         pl_name = create_pl.group(3).strip()
         if not pl_name:
@@ -838,7 +853,7 @@ async def handle_message(update, context):
         return
 
     # ===== РАР НАЙДИ ПЛЕЙЛИСТ =====
-    find_pl = re.match(r"^(рар|rar),?\s+най(ди|ти)\s+плейлист\s+(.+)$", text, re.IGNORECASE)
+    find_pl = re.match(r"^(рар|rar)[,.]?\s+най(ди|ти)\s+плейлист\s+(.+)$", text, re.IGNORECASE)
     if find_pl:
         pl_name = find_pl.group(3).strip()
         if not pl_name:
@@ -880,10 +895,11 @@ async def handle_message(update, context):
         return
 
     # ===== РАР УДАЛИ X ИЗ Y =====
-    del_from = re.match(r"^(рар|rar),?\s+удал(и|ить)\s+(.+?)\s+из\s+(.+)$", text, re.IGNORECASE)
+    del_from = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+?)\s+из\s+(.+)$", text, re.IGNORECASE)
     if del_from:
         track_query = del_from.group(3).strip()
         pl_name = del_from.group(4).strip()
+        await log_to_owner(context, f"[DEL_FROM] text='{text}'\ntrack='{track_query}'\npl='{pl_name}'")
         pl = get_playlist_by_name(pl_name)
         if not pl:
             await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML")
@@ -907,10 +923,12 @@ async def handle_message(update, context):
         return
 
     # ===== РАР УДАЛИ ПЛЕЙЛИСТ =====
-    del_pl = re.match(r"^(рар|rar),?\s+удал(и|ить)\s+(.+)$", text, re.IGNORECASE)
+    del_pl = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+)$", text, re.IGNORECASE)
     if del_pl:
         pl_name = del_pl.group(3).strip()
+        await log_to_owner(context, f"[DEL_PL] text='{text}'\npl='{pl_name}'")
         pl = get_playlist_by_name(pl_name)
+        await log_to_owner(context, f"[DEL_PL] pl={pl}")
         if not pl:
             await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML")
             return
@@ -923,11 +941,13 @@ async def handle_message(update, context):
         return
 
     # ===== РАР ПЕРЕИМЕНУЙ =====
-    ren_pl = re.match(r"^(рар|rar),?\s+переимену(й|ть)\s+(.+?)\s+в\s+(.+)$", text, re.IGNORECASE)
+    ren_pl = re.match(r"^(рар|rar)[,.]?\s+переимену(й|ть)\s+(.+?)\s+в\s+(.+)$", text, re.IGNORECASE)
     if ren_pl:
         old_name = ren_pl.group(3).strip()
         new_name = ren_pl.group(4).strip()
+        await log_to_owner(context, f"[REN_PL] text='{text}'\nold='{old_name}'\nnew='{new_name}'")
         pl = get_playlist_by_name(old_name)
+        await log_to_owner(context, f"[REN_PL] pl={pl}")
         if not pl:
             await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(old_name)}</b>", parse_mode="HTML")
             return
@@ -1158,8 +1178,10 @@ async def handle_message(update, context):
         return
 
     # ===== НАЙДИ ТРЕК =====
-    if clean.startswith("rar найди ") or clean.startswith("рар найди "):
-        query = text[9:].strip()
+    if clean.startswith("rar найди ") or clean.startswith("рар найди ") or clean.startswith("rar найти ") or clean.startswith("рар найти "):
+        m = re.match(r"^(рар|rar)[,.]?\s+най(ди|ти)\s+(.+)$", text, re.IGNORECASE)
+        if not m: return
+        query = m.group(3).strip()
         if not query:
             await update.message.reply_text("Напиши название песни, например: Rar найди duvet"); return
         status_msg = await update.message.reply_text("Ищу трек в своей коллекции...")
