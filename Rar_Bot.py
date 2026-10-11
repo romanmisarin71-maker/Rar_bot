@@ -1,24 +1,12 @@
-import os
-import random
-import re
-import time
-import asyncio
-import traceback
-import psycopg2
+import os, random, re, time, asyncio, traceback, psycopg2
 from collections import OrderedDict
 from html import escape as html_escape
 from urllib.parse import urlparse
 from aiohttp import web
-from telegram import (
-    Update, InlineQueryResultCachedAudio, InlineQueryResultArticle,
-    InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton,
-    ChatPermissions
-)
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ChatMemberHandler,
-    InlineQueryHandler, ChosenInlineResultHandler, CallbackQueryHandler,
-    filters, ContextTypes
-)
+from telegram import (Update, InlineQueryResultCachedAudio, InlineQueryResultArticle,
+    InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions)
+from telegram.ext import (Application, CommandHandler, MessageHandler, ChatMemberHandler,
+    InlineQueryHandler, ChosenInlineResultHandler, CallbackQueryHandler, filters, ContextTypes)
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -66,10 +54,8 @@ GREET_DEDUP_TTL = 5
 
 def get_db_connection():
     result = urlparse(DATABASE_URL)
-    return psycopg2.connect(
-        database=result.path[1:], user=result.username, password=result.password,
-        host=result.hostname, port=result.port, sslmode='require'
-    )
+    return psycopg2.connect(database=result.path[1:], user=result.username,
+        password=result.password, host=result.hostname, port=result.port, sslmode='require')
 
 
 def init_db():
@@ -101,8 +87,6 @@ def init_db():
     conn.commit(); cursor.close(); conn.close()
 
 
-# ==================== РАНГИ ====================
-
 def get_admin_rank(chat_id, user_id):
     try:
         conn = get_db_connection(); cursor = conn.cursor()
@@ -120,9 +104,8 @@ def set_admin_rank(chat_id, user_id, rank, by_user):
     else:
         cursor.execute("""INSERT INTO chat_admins (chat_id, user_id, rank, assigned_by, assigned_at)
             VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (chat_id, user_id) DO UPDATE SET
-                rank = EXCLUDED.rank, assigned_by = EXCLUDED.assigned_by, assigned_at = NOW()""",
-            (chat_id, user_id, rank, by_user))
+            ON CONFLICT (chat_id, user_id) DO UPDATE SET rank = EXCLUDED.rank,
+            assigned_by = EXCLUDED.assigned_by, assigned_at = NOW()""", (chat_id, user_id, rank, by_user))
     conn.commit(); cursor.close(); conn.close()
 
 
@@ -135,9 +118,9 @@ def get_all_admins(chat_id):
 async def get_chat_creator(chat_id, context):
     now = time.time()
     if chat_id in _creator_cache:
-        creator_id, ts = _creator_cache[chat_id]
+        cid, ts = _creator_cache[chat_id]
         if now - ts < CREATOR_CACHE_TTL:
-            return creator_id
+            return cid
     try:
         admins = await context.bot.get_chat_administrators(chat_id)
         for a in admins:
@@ -162,8 +145,6 @@ async def check_user_rank(update, context, chat_id, user_id, required_rank):
         return False
     return True
 
-
-# ==================== ТРЕКИ ====================
 
 def save_track_to_db(file_id, title, added_by):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -258,10 +239,8 @@ def increment_play(file_id):
         tn = get_track_num(file_id)
         if not tn: return
         conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("""INSERT INTO track_stats (track_num, plays, last_played)
-            VALUES (%s, 1, NOW())
-            ON CONFLICT (track_num) DO UPDATE SET
-                plays = track_stats.plays + 1, last_played = NOW()""", (tn,))
+        cursor.execute("""INSERT INTO track_stats (track_num, plays, last_played) VALUES (%s, 1, NOW())
+            ON CONFLICT (track_num) DO UPDATE SET plays = track_stats.plays + 1, last_played = NOW()""", (tn,))
         conn.commit(); cursor.close(); conn.close()
     except Exception as e:
         print(f"[INCREMENT PLAY ERROR] {e}")
@@ -269,14 +248,11 @@ def increment_play(file_id):
 
 def get_top_tracks(limit=10):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("""SELECT cm.title, ts.plays
-        FROM track_stats ts
+    cursor.execute("""SELECT cm.title, ts.plays FROM track_stats ts
         JOIN channel_music cm ON cm.track_num = ts.track_num
         WHERE ts.plays > 0 ORDER BY ts.plays DESC LIMIT %s""", (limit,))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
-
-# ==================== ПЛЕЙЛИСТЫ ====================
 
 def create_playlist(name, owner_id):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -327,8 +303,7 @@ def rename_playlist(pid, new_name):
 
 
 def add_track_to_playlist(pid, track_num):
-    if track_num is None:
-        return "not_found"
+    if track_num is None: return "not_found"
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT track_nums FROM playlists WHERE playlist_id = %s", (pid,))
     row = cursor.fetchone()
@@ -353,9 +328,8 @@ def increment_playlist_search(pid):
     try:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("""INSERT INTO playlist_stats (playlist_id, searches, last_searched)
-            VALUES (%s, 1, NOW())
-            ON CONFLICT (playlist_id) DO UPDATE SET
-                searches = playlist_stats.searches + 1, last_searched = NOW()""", (pid,))
+            VALUES (%s, 1, NOW()) ON CONFLICT (playlist_id) DO UPDATE SET
+            searches = playlist_stats.searches + 1, last_searched = NOW()""", (pid,))
         conn.commit(); cursor.close(); conn.close()
     except Exception as e:
         print(f"[PLAYLIST SEARCH ERROR] {e}")
@@ -363,8 +337,7 @@ def increment_playlist_search(pid):
 
 def get_top_playlists(limit=10):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("""SELECT p.name, ps.searches
-        FROM playlist_stats ps
+    cursor.execute("""SELECT p.name, ps.searches FROM playlist_stats ps
         JOIN playlists p ON p.playlist_id = ps.playlist_id
         WHERE ps.searches > 0 ORDER BY ps.searches DESC LIMIT %s""", (limit,))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
@@ -375,8 +348,7 @@ def get_random_playlist_with_tracks(user_id):
     seen = recent_playlists.get(user_id, {})
     seen = {pid: ts for pid, ts in seen.items() if now - ts < RECENT_PLAYLISTS_TTL}
     if len(seen) > RECENT_PLAYLISTS_LIMIT:
-        sorted_items = sorted(seen.items(), key=lambda x: x[1])
-        seen = dict(sorted_items[-RECENT_PLAYLISTS_LIMIT:])
+        seen = dict(sorted(seen.items(), key=lambda x: x[1])[-RECENT_PLAYLISTS_LIMIT:])
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT playlist_id, name, owner_id, track_nums FROM playlists WHERE cardinality(track_nums) > 0")
     all_pls = cursor.fetchall(); cursor.close(); conn.close()
@@ -390,8 +362,6 @@ def get_random_playlist_with_tracks(user_id):
     recent_playlists[user_id] = seen
     return chosen
 
-
-# ==================== ЧАТЫ ====================
 
 def get_chat_settings(chat_id):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -470,8 +440,6 @@ def get_notify_chat_id():
     v = get_system_setting("notify_chat_id"); return int(v) if v else None
 
 
-# ==================== ХЕЛПЕРЫ ====================
-
 def substitute_vars(text, user_name, chat_title):
     text = text.replace("%имя%", user_name).replace("%user%", user_name)
     return text.replace("%чат%", chat_title).replace("%chat%", chat_title)
@@ -523,18 +491,15 @@ async def notify_moderation(context, text):
 
 async def safe_answer_inline(update, context, results, cache_time=0):
     if not results:
-        try:
-            await update.inline_query.answer([], cache_time=cache_time)
-        except Exception:
-            pass
+        try: await update.inline_query.answer([], cache_time=cache_time)
+        except Exception: pass
         return
-    tried = list(results)
-    removed_ids = []
+    tried = list(results); removed_ids = []
     while tried:
         try:
             await update.inline_query.answer(tried, cache_time=cache_time)
             if removed_ids:
-                await log_to_owner(context, f"[INLINE REMOVED] {len(removed_ids)} проблемных:\n" + "\n".join(removed_ids))
+                await log_to_owner(context, f"[INLINE REMOVED] {len(removed_ids)}:\n" + "\n".join(removed_ids))
             return
         except Exception as e:
             err = str(e)
@@ -543,20 +508,15 @@ async def safe_answer_inline(update, context, results, cache_time=0):
                 fid_removed = None
                 if hasattr(removed, 'id') and removed.id in inline_result_cache:
                     fid_removed, _ = inline_result_cache[removed.id]
-                if fid_removed:
-                    mark_track_broken(fid_removed)
+                if fid_removed: mark_track_broken(fid_removed)
                 removed_ids.append(getattr(removed, 'id', '?'))
             else:
                 await log_to_owner(context, f"[INLINE FATAL] {err}\n{traceback.format_exc()[:800]}")
-                try:
-                    await update.inline_query.answer([], cache_time=cache_time)
-                except Exception:
-                    pass
+                try: await update.inline_query.answer([], cache_time=cache_time)
+                except Exception: pass
                 return
-    try:
-        await update.inline_query.answer([], cache_time=cache_time)
-    except Exception:
-        pass
+    try: await update.inline_query.answer([], cache_time=cache_time)
+    except Exception: pass
 
 
 saved_users_cache = OrderedDict()
@@ -572,6 +532,31 @@ def uncache_user(user_id, chat_id):
 
 def is_user_cached(user_id, chat_id):
     return (user_id, chat_id) in saved_users_cache
+
+
+def pick_random_with_antirepeat(user_id, limit):
+    now = time.time()
+    seen = inline_seen.get(user_id, {})
+    seen = {fid: ts for fid, ts in seen.items() if now - ts < INLINE_SEEN_TTL}
+    if len(seen) > INLINE_SEEN_LIMIT:
+        seen = dict(sorted(seen.items(), key=lambda x: x[1])[-INLINE_SEEN_LIMIT:])
+    all_tracks = get_all_tracks_from_db(only_ok=True)
+    if not all_tracks:
+        inline_seen[user_id] = seen; return []
+    available = [t for t in all_tracks if t[0] not in seen]
+    if len(available) < limit:
+        seen = {}; available = all_tracks
+    random.shuffle(available)
+    chosen = available[:limit]
+    for fid, _ in chosen: seen[fid] = now
+    inline_seen[user_id] = seen
+    return chosen
+
+
+def cleanup_inline_result_cache():
+    now = time.time()
+    to_delete = [rid for rid, (_, ts) in inline_result_cache.items() if now - ts > INLINE_RESULT_CACHE_TTL]
+    for rid in to_delete: del inline_result_cache[rid]
 
 
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
@@ -605,10 +590,6 @@ recent_tracks_history, love_replies_history, hi_replies_history = {}, {}, {}
 GREET_PREFIXES = ["рар измени приветствие","рар, измени приветствие","rar измени приветствие","rar, измени приветствие","рар изменить приветствие","рар, изменить приветствие","rar изменить приветствие","rar, изменить приветствие"]
 FAREWELL_PREFIXES = ["рар измени прощание","рар, измени прощание","rar измени прощание","rar, измени прощание","рар изменить прощание","рар, изменить прощание","rar изменить прощание","rar, изменить прощание"]
 DELETE_COMMANDS = ["рар удали","рар, удали","rar удали","rar, удали","рар удалить","рар, удалить","rar удалить","rar, удалить"]
-
-
-# ==================== СТАРТ ====================
-
 async def start_command(update, context):
     if update.effective_chat.id >= 0:
         text = ("<b>✨ Привет! Я Rar – ваш универсальный помощник.</b>\n\n"
@@ -618,43 +599,30 @@ async def start_command(update, context):
         await update.message.reply_text(text, parse_mode="HTML")
 
 
-# ==================== ИНЛАЙН ====================
-
 async def inline_query_handler(update, context):
     query = update.inline_query.query.strip().lower()
     user_id = update.inline_query.from_user.id
     results = []
     cleanup_inline_result_cache()
-
     try:
         if query == "":
             tracks = pick_random_with_antirepeat(user_id, limit=10)
             for i, (fid, title) in enumerate(tracks):
-                results.append(InlineQueryResultCachedAudio(
-                    id=f"empty_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
-            results.append(InlineQueryResultArticle(
-                id="shuffle_empty",
-                title="🔄 Новый набор песен",
-                description="Показать другие случайные треки",
-                thumbnail_url=RAR_LOGO_URL,
+                results.append(InlineQueryResultCachedAudio(id=f"empty_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
+            results.append(InlineQueryResultArticle(id="shuffle_empty", title="🔄 Новый набор песен",
+                description="Показать другие случайные треки", thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
             await safe_answer_inline(update, context, results, cache_time=0)
-
         elif query in ["дай песню", "песня", "музыка"]:
             tracks = pick_random_with_antirepeat(user_id, limit=20)
             for i, (fid, title) in enumerate(tracks):
-                results.append(InlineQueryResultCachedAudio(
-                    id=f"rand_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
-            results.append(InlineQueryResultArticle(
-                id="shuffle",
-                title="🔄 Новый набор песен",
-                description="Показать другие случайные треки",
-                thumbnail_url=RAR_LOGO_URL,
+                results.append(InlineQueryResultCachedAudio(id=f"rand_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
+            results.append(InlineQueryResultArticle(id="shuffle", title="🔄 Новый набор песен",
+                description="Показать другие случайные треки", thumbnail_url=RAR_LOGO_URL,
                 input_message_content=InputTextMessageContent("🔄 Новый набор"),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
             await safe_answer_inline(update, context, results, cache_time=0)
-
         elif query.startswith("плейлист "):
             pl_name = query[9:].strip()
             if not pl_name:
@@ -670,10 +638,8 @@ async def inline_query_handler(update, context):
             for i, (fid, title) in enumerate(tracks):
                 rid = f"pl_{pid}_{i}_{int(time.time()*1000)}"
                 inline_result_cache[rid] = (fid, time.time())
-                results.append(InlineQueryResultCachedAudio(
-                    id=rid, audio_file_id=fid, caption=clean_title(title)))
+                results.append(InlineQueryResultCachedAudio(id=rid, audio_file_id=fid, caption=clean_title(title)))
             await safe_answer_inline(update, context, results, cache_time=0)
-
         elif query.startswith("найди ") or query.startswith("трек "):
             search = query[6:].strip()
             if not search:
@@ -682,35 +648,24 @@ async def inline_query_handler(update, context):
             for i, (fid, title, tnum) in enumerate(tracks):
                 rid = f"find_{i}_{int(time.time()*1000)}_{fid[:10]}"
                 inline_result_cache[rid] = (fid, time.time())
-                results.append(InlineQueryResultCachedAudio(
-                    id=rid, audio_file_id=fid, caption=clean_title(title)))
+                results.append(InlineQueryResultCachedAudio(id=rid, audio_file_id=fid, caption=clean_title(title)))
             await safe_answer_inline(update, context, results, cache_time=0)
-
         elif query.startswith("монетка") or query.startswith("подкинь монетку"):
-            if random.randint(1, 50) == 50:
-                coin_text = "Эээ... монетка встала ребром..."
-            else:
-                coin_text = random.choice(answers_coin)
-            results.append(InlineQueryResultArticle(
-                id="coin", title="🎲 Бросить монетку", thumbnail_url=RAR_LOGO_URL,
-                input_message_content=InputTextMessageContent(coin_text)))
+            coin_text = "Эээ... монетка встала ребром..." if random.randint(1, 50) == 50 else random.choice(answers_coin)
+            results.append(InlineQueryResultArticle(id="coin", title="🎲 Бросить монетку",
+                thumbnail_url=RAR_LOGO_URL, input_message_content=InputTextMessageContent(coin_text)))
             await safe_answer_inline(update, context, results, cache_time=0)
-
         else:
             tracks = search_tracks_in_db(query, limit=20)
             for i, (fid, title, tnum) in enumerate(tracks):
                 rid = f"auto_{i}_{int(time.time()*1000)}_{fid[:10]}"
                 inline_result_cache[rid] = (fid, time.time())
-                results.append(InlineQueryResultCachedAudio(
-                    id=rid, audio_file_id=fid, caption=clean_title(title)))
+                results.append(InlineQueryResultCachedAudio(id=rid, audio_file_id=fid, caption=clean_title(title)))
             await safe_answer_inline(update, context, results, cache_time=0)
-
     except Exception as e:
         await log_to_owner(context, f"[INLINE OUTER] q='{query}'\n{e}\n{traceback.format_exc()[:800]}")
-        try:
-            await update.inline_query.answer([], cache_time=0)
-        except Exception:
-            pass
+        try: await update.inline_query.answer([], cache_time=0)
+        except Exception: pass
 
 
 async def chosen_inline_result_handler(update, context):
@@ -728,8 +683,6 @@ async def chosen_inline_result_handler(update, context):
         print(f"[CHOSEN INLINE ERROR] {e}")
 
 
-# ==================== КНОПКИ ПЛЕЙЛИСТА ====================
-
 def build_playlist_message(pid, index):
     pl = get_playlist_by_id(pid)
     if not pl: return None
@@ -740,8 +693,7 @@ def build_playlist_message(pid, index):
     rows = cursor.fetchall(); cursor.close(); conn.close()
     if not rows: return None
     ok_nums = [r[0] for r in rows]
-    total = len(ok_nums)
-    index = index % total
+    total = len(ok_nums); index = index % total
     tn = ok_nums[index]
     track = get_track_by_num(tn)
     if not track: return None
@@ -749,257 +701,196 @@ def build_playlist_message(pid, index):
     text = f"✨ Плейлист: <b>{html_escape(name)}</b>\n| {index+1}/{total} | {html_escape(clean_title(title))}"
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("⬅️ Назад", callback_data=f"pl_{pid}_{(index-1) % total}"),
-        InlineKeyboardButton("➡️ Далее", callback_data=f"pl_{pid}_{(index+1) % total}")
-    ]])
+        InlineKeyboardButton("➡️ Далее", callback_data=f"pl_{pid}_{(index+1) % total}")]])
     return text, fid, kb
 
 
 async def playlist_nav_handler(update, context):
     query = update.callback_query
-    try:
-        await query.answer()
-    except Exception:
-        pass
-    data = query.data
-    m = re.match(r"^pl_(\d+)_(\d+)$", data)
-    if not m:
-        return
-    pid = int(m.group(1))
-    index = int(m.group(2))
+    try: await query.answer()
+    except Exception: pass
+    m = re.match(r"^pl_(\d+)_(\d+)$", query.data)
+    if not m: return
+    pid = int(m.group(1)); index = int(m.group(2))
     built = build_playlist_message(pid, index)
     if not built:
-        try:
-            await query.edit_message_text("Плейлист пуст или удалён")
-        except Exception:
-            pass
+        try: await query.edit_message_text("Плейлист пуст или удалён")
+        except Exception: pass
         return
     text_msg, fid, kb = built
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    try:
-        await context.bot.send_audio(chat_id=query.message.chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
-    except Exception as e:
-        await log_to_owner(context, f"[PL NAV ERROR] {e}")
+    try: await query.message.delete()
+    except Exception: pass
+    try: await context.bot.send_audio(chat_id=query.message.chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
+    except Exception as e: await log_to_owner(context, f"[PL NAV ERROR] {e}")
 
-
-# ==================== ОСНОВНОЙ ОБРАБОТЧИК ====================
 
 async def handle_message(update, context):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message or not update.effective_user: return
     if update.effective_user.is_bot: return
-
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     username = update.effective_user.username
     owner_id = get_owner_id()
-
     if chat_id < 0 and not is_user_cached(user_id, chat_id):
-        try:
-            save_user_to_chat(user_id, chat_id); cache_user(user_id, chat_id)
-        except Exception:
-            pass
-
+        try: save_user_to_chat(user_id, chat_id); cache_user(user_id, chat_id)
+        except Exception: pass
     incoming = ""
     if update.message.text: incoming = update.message.text.lower().strip()
     elif update.message.caption: incoming = update.message.caption.lower().strip()
-
     text = update.message.text or ""
 
-    # ==================== АДМИН-КОМАНДЫ ====================
-
-    # РАР АДМИН + / ++ / - / -- / (показать)
     admin_match = re.match(r"^(рар|rar)[,.]?\s+админ(?:\s+(\+\+|--|\+|-))?\s*(.*)$", text, re.IGNORECASE)
     if admin_match:
-        action = admin_match.group(2)
-        target_arg = admin_match.group(3).strip()
-
-        # Получить цель
+        action = admin_match.group(2); target_arg = admin_match.group(3).strip()
         target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
         elif target_arg:
-            # Парсим @username или числовой ID
             if target_arg.startswith("@"):
-                uname = target_arg[1:]
-                # Ищем в БД по username... у нас username не хранится. Пробуем tg://user?id=
-                # Не можем. Попробуем найти в админах чата по username через get_chat_member
                 try:
-                    member = await context.bot.get_chat_member(chat_id, uname)
+                    member = await context.bot.get_chat_member(chat_id, target_arg)
                     target_user = member.user
                 except Exception:
-                    await update.message.reply_text("Не могу найти пользователя по username. Ответь на его сообщение командой!")
-                    return
+                    await update.message.reply_text("Не могу найти по username. Ответь на сообщение!"); return
             else:
-                try:
-                    target_user = await context.bot.get_chat(int(target_arg))
+                try: target_user = await context.bot.get_chat(int(target_arg))
                 except Exception:
-                    await update.message.reply_text("Не понял, кого. Ответь на сообщение или укажи @username.")
-                    return
-
+                    await update.message.reply_text("Не понял кого. Ответь или укажи @username."); return
         if not target_user:
-            await update.message.reply_text("Не понял, кого. Ответь на сообщение или укажи @username.")
-            return
-
-        # Если просто "Рар админ @user" — показать ранг
+            await update.message.reply_text("Не понял кого. Ответь или укажи @username."); return
         if action is None:
             rank = get_admin_rank(chat_id, target_user.id)
             creator = await get_chat_creator(chat_id, context)
             if creator and target_user.id == creator:
-                await update.message.reply_text(f"{target_user.first_name} — создатель чата")
-                return
-            await update.message.reply_text(f"{target_user.first_name} — {RANK_NAMES.get(rank, 'не админ')}")
-            return
-
-        # Проверяем права актора
+                await update.message.reply_text(f"{target_user.first_name} — создатель чата"); return
+            try:
+                tg_member = await context.bot.get_chat_member(chat_id, target_user.id)
+                tg_is_admin = tg_member.status in ADMIN_STATUSES
+            except Exception: tg_is_admin = False
+            line = f"{target_user.first_name} — {RANK_NAMES.get(rank, 'не админ')}"
+            if tg_is_admin and rank == RANK_NONE:
+                line += "\n(в Telegram админ, но в БД нет — напиши Рар админ + чтобы синхронизировать)"
+            await update.message.reply_text(line, parse_mode="HTML"); return
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах")
-            return
+            await update.message.reply_text("Эта команда работает только в группах"); return
         actor_creator = await get_chat_creator(chat_id, context)
         actor_rank = get_admin_rank(chat_id, user_id)
         actor_is_creator = (actor_creator and user_id == actor_creator)
-
         if not actor_is_creator and actor_rank < RANK_SENIOR:
-            await update.message.reply_text("Не дорос еще! Недостаточно прав!!!")
-            return
-
-        # Нельзя трогать создателя
+            await update.message.reply_text("Не дорос еще! Недостаточно прав!!!"); return
         target_creator = await get_chat_creator(chat_id, context)
         if target_creator and target_user.id == target_creator:
-            await update.message.reply_text("Нельзя трогать создателя чата!")
-            return
-
-        # Нельзя трогать себя
+            await update.message.reply_text("Нельзя трогать создателя чата!"); return
         if target_user.id == user_id:
-            await update.message.reply_text("Себя нельзя!")
-            return
-
+            await update.message.reply_text("Себя нельзя!"); return
         target_rank = get_admin_rank(chat_id, target_user.id)
-
-        # Старший не может трогать старшего
         if not actor_is_creator and target_rank >= RANK_SENIOR:
-            await update.message.reply_text("Нельзя трогать старшего админа!")
-            return
-
+            await update.message.reply_text("Нельзя трогать старшего админа!"); return
         new_rank = target_rank
         if action == "+":
-            if target_rank == RANK_NONE:
-                new_rank = RANK_LOW
-            else:
-                await update.message.reply_text("Он уже админ. Используй ++ для повышения.")
-                return
+            if target_rank == RANK_NONE: new_rank = RANK_LOW
+            else: await update.message.reply_text("Он уже админ. Используй ++."); return
         elif action == "++":
-            if target_rank == RANK_NONE:
-                await update.message.reply_text("Он не админ. Используй + чтобы назначить.")
-                return
-            elif target_rank < RANK_SENIOR:
-                new_rank = target_rank + 1
-            else:
-                await update.message.reply_text("Уже старший админ!")
-                return
+            if target_rank == RANK_NONE: await update.message.reply_text("Он не админ. Используй +."); return
+            elif target_rank < RANK_SENIOR: new_rank = target_rank + 1
+            else: await update.message.reply_text("Уже старший!"); return
         elif action == "-":
-            if target_rank > RANK_LOW:
-                new_rank = target_rank - 1
+            if target_rank > RANK_LOW: new_rank = target_rank - 1
+            else: await update.message.reply_text("Уже мл. Используй --."); return
+        elif action == "--": new_rank = RANK_NONE
+        try:
+            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+            if not getattr(bot_member, 'can_promote_members', False):
+                await update.message.reply_text("У меня нет права назначать админов! Выдайте пожалуйста!!!"); return
+        except Exception as e:
+            await log_to_owner(context, f"[PROMOTE CHECK ERROR] {e}")
+            await update.message.reply_text("Не смогла проверить права..."); return
+        try:
+            if new_rank == RANK_NONE:
+                await context.bot.promote_chat_member(chat_id, target_user.id,
+                    can_delete_messages=False, can_restrict_members=False, can_invite_users=False,
+                    can_manage_chat=False, can_promote_members=False, can_change_info=False, can_pin_messages=False)
             else:
-                await update.message.reply_text("Уже мл. админ. Используй -- чтобы снять.")
-                return
-        elif action == "--":
-            new_rank = RANK_NONE
-
+                await context.bot.promote_chat_member(chat_id, target_user.id,
+                    can_delete_messages=True, can_restrict_members=(new_rank >= RANK_MID),
+                    can_invite_users=(new_rank >= RANK_MID), can_manage_chat=False,
+                    can_promote_members=False, can_change_info=False, can_pin_messages=False)
+        except Exception as e:
+            await log_to_owner(context, f"[PROMOTE ERROR] {e}")
+            await update.message.reply_text(f"Не смогла изменить права: {e}"); return
         set_admin_rank(chat_id, target_user.id, new_rank, user_id)
         await update.message.reply_text(f"{target_user.first_name} теперь {RANK_NAMES.get(new_rank, 'не админ')}")
+        uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
+        await notify_moderation(context, f"🛡 <b>Изменение ранга</b>\n{target_user.first_name} → {RANK_NAMES.get(new_rank, 'не админ')}\nКто: {uname}")
         return
 
-    # РАР АДМИНЫ (список)
     if incoming in ["рар админы", "rar админы", "рар, админы", "rar, админы"]:
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах")
-            return
+            await update.message.reply_text("Только в группах"); return
         admins = get_all_admins(chat_id)
         creator = await get_chat_creator(chat_id, context)
         lines = ["Список админов Rar:\n"]
         if creator:
             try:
-                u = await context.bot.get_chat(creator)
-                lines.append(f"👑 {u.first_name} — создатель")
-            except Exception:
-                lines.append(f"👑 ID {creator} — создатель")
+                u = await context.bot.get_chat(creator); lines.append(f"👑 {u.first_name} — создатель")
+            except Exception: lines.append(f"👑 ID {creator} — создатель")
         for uid, rank in admins:
             try:
-                u = await context.bot.get_chat(uid)
-                lines.append(f"• {u.first_name} — {RANK_NAMES.get(rank, '?')}")
-            except Exception:
-                lines.append(f"• ID {uid} — {RANK_NAMES.get(rank, '?')}")
-        if len(lines) == 1:
-            lines.append("Пока никого нет")
-        await update.message.reply_text("\n".join(lines))
-        return
+                u = await context.bot.get_chat(uid); lines.append(f"• {u.first_name} — {RANK_NAMES.get(rank, '?')}")
+            except Exception: lines.append(f"• ID {uid} — {RANK_NAMES.get(rank, '?')}")
+        if len(lines) == 1: lines.append("Пока никого")
+        await update.message.reply_text("\n".join(lines)); return
 
-    # ==================== МОДЕРАЦИЯ ====================
-
-    # БАН
     ban_match = re.match(r"^(рар|rar)[,.]?\s+бан\s*(.*)$", text, re.IGNORECASE)
     if ban_match:
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR):
-            return
-        target_user = None
-        reason = ban_match.group(2).strip()
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
+        target_user = None; reason = ban_match.group(2).strip()
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
         elif reason:
-            parts = reason.split(None, 1)
-            target_arg = parts[0]
+            parts = reason.split(None, 1); target_arg = parts[0]
             reason = parts[1] if len(parts) > 1 else ""
             try:
                 if target_arg.startswith("@"):
-                    m = await context.bot.get_chat_member(chat_id, target_arg)
-                    target_user = m.user
-                else:
-                    target_user = await context.bot.get_chat(int(target_arg))
+                    m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
+                else: target_user = await context.bot.get_chat(int(target_arg))
             except Exception:
-                await update.message.reply_text("Не понял, кого банить"); return
+                await update.message.reply_text("Не понял кого"); return
         if not target_user:
-            await update.message.reply_text("Ответь на сообщение или укажи @username"); return
+            await update.message.reply_text("Ответь или укажи @username"); return
         creator = await get_chat_creator(chat_id, context)
         if creator and target_user.id == creator:
-            await update.message.reply_text("Нельзя банить создателя чата!"); return
+            await update.message.reply_text("Нельзя банить создателя!"); return
         try:
             await context.bot.ban_chat_member(chat_id, target_user.id)
             msg = f"{target_user.first_name} забанен"
             if reason: msg += f". Причина: {reason}"
             await update.message.reply_text(msg)
-            await notify_moderation(context, f"🔨 <b>Бан</b>\nКто: {target_user.first_name} [ID: {target_user.id}]\nЧат: {chat_id}\nПричина: {reason or '—'}")
+            await notify_moderation(context, f"🔨 <b>Бан</b>\n{target_user.first_name} [ID: {target_user.id}]\nЧат: {chat_id}\nПричина: {reason or '—'}")
         except Exception as e:
             await update.message.reply_text("У меня недостаточно прав для бана, выдайте пожалуйста!!!")
             await log_to_owner(context, f"[BAN ERROR] {e}")
         return
 
-    # РАЗБАН
     unban_match = re.match(r"^(рар|rar)[,.]?\s+разбан\s*(.*)$", text, re.IGNORECASE)
     if unban_match:
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR):
-            return
-        target_arg = unban_match.group(2).strip()
-        target_user = None
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
+        target_arg = unban_match.group(2).strip(); target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
         elif target_arg:
             try:
                 if target_arg.startswith("@"):
-                    m = await context.bot.get_chat_member(chat_id, target_arg)
-                    target_user = m.user
-                else:
-                    target_user = await context.bot.get_chat(int(target_arg))
-            except Exception:
-                await update.message.reply_text("Не понял, кого разбанить"); return
+                    m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
+                else: target_user = await context.bot.get_chat(int(target_arg))
+            except Exception: pass
         if not target_user:
-            await update.message.reply_text("Ответь на сообщение или укажи @username"); return
+            await update.message.reply_text("Ответь или укажи @username"); return
         try:
             await context.bot.unban_chat_member(chat_id, target_user.id, only_if_banned=True)
             await update.message.reply_text(f"{target_user.first_name} разбанен")
@@ -1008,13 +899,11 @@ async def handle_message(update, context):
             await log_to_owner(context, f"[UNBAN ERROR] {e}")
         return
 
-    # КИК
     kick_match = re.match(r"^(рар|rar)[,.]?\s+кик\s*(.*)$", text, re.IGNORECASE)
     if kick_match:
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR):
-            return
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
         target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
@@ -1023,17 +912,14 @@ async def handle_message(update, context):
             if target_arg:
                 try:
                     if target_arg.startswith("@"):
-                        m = await context.bot.get_chat_member(chat_id, target_arg)
-                        target_user = m.user
-                    else:
-                        target_user = await context.bot.get_chat(int(target_arg))
-                except Exception:
-                    pass
+                        m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
+                    else: target_user = await context.bot.get_chat(int(target_arg))
+                except Exception: pass
         if not target_user:
-            await update.message.reply_text("Ответь на сообщение или укажи @username"); return
+            await update.message.reply_text("Ответь или укажи @username"); return
         creator = await get_chat_creator(chat_id, context)
         if creator and target_user.id == creator:
-            await update.message.reply_text("Нельзя кикать создателя чата!"); return
+            await update.message.reply_text("Нельзя кикать создателя!"); return
         try:
             await context.bot.ban_chat_member(chat_id, target_user.id)
             await context.bot.unban_chat_member(chat_id, target_user.id)
@@ -1043,57 +929,42 @@ async def handle_message(update, context):
             await log_to_owner(context, f"[KICK ERROR] {e}")
         return
 
-    # МУТ
     mute_match = re.match(r"^(рар|rar)[,.]?\s+мут\s+(.+)$", text, re.IGNORECASE)
     if mute_match:
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID):
-            return
-        args = mute_match.group(2).strip()
-        target_user = None
-        duration_seconds = None
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
+        args = mute_match.group(2).strip(); target_user = None; duration_seconds = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
             duration_seconds = parse_duration(args)
         else:
-            # Первое слово — цель, остальное — время
-            parts = args.split(None, 1)
-            target_arg = parts[0]
+            parts = args.split(None, 1); target_arg = parts[0]
             dur_text = parts[1] if len(parts) > 1 else ""
             duration_seconds = parse_duration(dur_text)
             try:
                 if target_arg.startswith("@"):
-                    m = await context.bot.get_chat_member(chat_id, target_arg)
-                    target_user = m.user
-                else:
-                    target_user = await context.bot.get_chat(int(target_arg))
-            except Exception:
-                pass
+                    m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
+                else: target_user = await context.bot.get_chat(int(target_arg))
+            except Exception: pass
         if not target_user:
-            await update.message.reply_text("Ответь на сообщение или укажи @username"); return
-        if duration_seconds is None:
-            duration_seconds = 600  # 10 минут по умолчанию
+            await update.message.reply_text("Ответь или укажи @username"); return
+        if duration_seconds is None: duration_seconds = 600
         until = int(time.time()) + duration_seconds
         try:
-            await context.bot.restrict_chat_member(
-                chat_id, target_user.id,
-                permissions=ChatPermissions(can_send_messages=False),
-                until_date=until
-            )
+            await context.bot.restrict_chat_member(chat_id, target_user.id,
+                permissions=ChatPermissions(can_send_messages=False), until_date=until)
             await update.message.reply_text(f"{target_user.first_name} замучен на {format_duration(duration_seconds)}")
         except Exception as e:
             await update.message.reply_text("Не получилось замутить")
             await log_to_owner(context, f"[MUTE ERROR] {e}")
         return
 
-    # РАЗМУТ
     unmute_match = re.match(r"^(рар|rar)[,.]?\s+размут\s*(.*)$", text, re.IGNORECASE)
     if unmute_match:
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID):
-            return
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
@@ -1102,100 +973,59 @@ async def handle_message(update, context):
             if target_arg:
                 try:
                     if target_arg.startswith("@"):
-                        m = await context.bot.get_chat_member(chat_id, target_arg)
-                        target_user = m.user
-                    else:
-                        target_user = await context.bot.get_chat(int(target_arg))
-                except Exception:
-                    pass
+                        m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
+                    else: target_user = await context.bot.get_chat(int(target_arg))
+                except Exception: pass
         if not target_user:
-            await update.message.reply_text("Ответь на сообщение или укажи @username"); return
+            await update.message.reply_text("Ответь или укажи @username"); return
         try:
-            await context.bot.restrict_chat_member(
-                chat_id, target_user.id,
-                permissions=ChatPermissions(
-                    can_send_messages=True, can_send_audios=True, can_send_documents=True,
-                    can_send_photos=True, can_send_videos=True, can_send_video_notes=True,
-                    can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True,
-                    can_add_web_page_previews=True, can_invite_users=True
-                )
-            )
+            await context.bot.restrict_chat_member(chat_id, target_user.id,
+                permissions=ChatPermissions(can_send_messages=True, can_send_audios=True,
+                    can_send_documents=True, can_send_photos=True, can_send_videos=True,
+                    can_send_video_notes=True, can_send_voice_notes=True, can_send_polls=True,
+                    can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
             await update.message.reply_text(f"{target_user.first_name} размучен")
         except Exception as e:
             await update.message.reply_text("Не получилось размутить")
             await log_to_owner(context, f"[UNMUTE ERROR] {e}")
         return
 
-    # РАР УДАЛИ (ответом) — удаление сообщения
-    if incoming in ["рар удали", "rar удали", "рар, удали", "rar, удали", "рар удалить", "rar удалить"]:
-        if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_LOW):
-            return
-        if not update.message.reply_to_message:
-            await update.message.reply_text("Ответь на сообщение которое надо удалить"); return
-        try:
-            await update.message.reply_to_message.delete()
-            try:
-                await update.message.delete()
-            except Exception:
-                pass
-        except Exception as e:
-            await update.message.reply_text("Не получилось удалить")
-            await log_to_owner(context, f"[DELETE MSG ERROR] {e}")
-        return
-
-    # ==================== ОСТАЛЬНЫЕ КОМАНДЫ ====================
-
-    # РАР ДОБАВЬ В ПЛЕЙЛИСТ
     add_to_pl = re.match(r"^(рар|rar)[,.]?\s+добав(ь|ить)\s+в\s+(.+)$", text, re.IGNORECASE)
     if add_to_pl:
-        pl_name = add_to_pl.group(3).strip()
-        target = None
+        pl_name = add_to_pl.group(3).strip(); target = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
             target = update.message.reply_to_message.audio
-        elif update.message.audio:
-            target = update.message.audio
+        elif update.message.audio: target = update.message.audio
         if not target:
-            await update.message.reply_text(f'Прикрепи аудио или ответь командой "Рар добавь в {pl_name}"')
-            return
+            await update.message.reply_text(f'Прикрепи аудио или ответь "Рар добавь в {pl_name}"'); return
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>, можешь создать:\n<code>Рар создай плейлист {html_escape(pl_name)}</code>", parse_mode="HTML")
-            return
+            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>. Создай: <code>Рар создай плейлист {html_escape(pl_name)}</code>", parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Это не твой плейлист! Нельзя так делать!!!")
-            return
+            await update.message.reply_text("Это не твой плейлист! Нельзя так делать!!!"); return
         perf = target.performer.strip() if target.performer else ""
         title = target.title.strip() if target.title else ""
         track_title = f"{perf} - {title}" if perf and title else (target.file_name or "Неизвестный трек")
         tn = get_track_num(target.file_id)
         if not tn:
             existing = search_track_in_db_by_title(track_title)
-            if existing:
-                tn = existing[2]
+            if existing: tn = existing[2]
             else:
-                save_track_to_db(target.file_id, track_title, user_id)
-                tn = get_track_num(target.file_id)
+                save_track_to_db(target.file_id, track_title, user_id); tn = get_track_num(target.file_id)
         if not tn:
             await update.message.reply_text("Что-то пошло не так"); return
         result = add_track_to_playlist(pid, tn)
-        if result == "already":
-            await update.message.reply_text("Вообще то этот трек уже в плейлисте")
-        elif result == "limit":
-            await update.message.reply_text(f"В плейлисте уже максимум песен ({PLAYLIST_LIMIT})!")
-        elif result == "ok":
-            await update.message.reply_text(f"✨ Добавила трек в плейлист <b>{html_escape(pname)}</b>!", parse_mode="HTML")
+        if result == "already": await update.message.reply_text("Вообще то этот трек уже в плейлисте")
+        elif result == "limit": await update.message.reply_text(f"Максимум {PLAYLIST_LIMIT} песен!")
+        elif result == "ok": await update.message.reply_text(f"✨ Добавила в плейлист <b>{html_escape(pname)}</b>!", parse_mode="HTML")
         return
 
-    # РАР ДОБАВЬ (общая)
     if re.match(r"^(рар|rar)[,.]?\s+добав(ь|ить)$", incoming) or incoming in ["добавь", "добавить"]:
         target = None
         if update.message.reply_to_message and update.message.reply_to_message.audio:
             target = update.message.reply_to_message.audio
-        elif update.message.audio:
-            target = update.message.audio
+        elif update.message.audio: target = update.message.audio
         if target:
             perf = target.performer.strip() if target.performer else ""
             title = target.title.strip() if target.title else ""
@@ -1212,25 +1042,20 @@ async def handle_message(update, context):
                     await context.bot.send_audio(chat_id=chat_id, audio=target.file_id,
                         caption=f"✨ Я занесла этот трек в коллекцию!\n\nИмя в базе: {track_title}")
                 except Exception: pass
-            else:
-                await update.message.reply_text(f"Этот трек уже бережно сохранен: {track_title}")
-        else:
-            await update.message.reply_text('Прикрепи аудио или ответь командой "Рар добавь"')
+            else: await update.message.reply_text(f"Этот трек уже сохранён: {track_title}")
+        else: await update.message.reply_text('Прикрепи аудио или ответь "Рар добавь"')
         return
 
     if not text: return
     clean = text.lower().strip()
 
-    # РАР КОМАНДЫ
     if clean in ["рар команды", "rar команды", "рар, команды", "rar, команды"]:
         await update.message.reply_text(
-            "<b>Команды Rar:</b>\n\n"
-            "<b>Музыка:</b>\n"
+            "<b>Команды Rar:</b>\n\n<b>Музыка:</b>\n"
             "• <code>Рар добавь</code> / <code>Рар добавить</code>\n"
             "• <code>Рар дай песню</code>\n"
             "• <code>Рар найди</code> / <code>Рар найти</code> [название]\n"
-            "• <code>Рар топ песен</code>\n\n"
-            "<b>Плейлисты:</b>\n"
+            "• <code>Рар топ песен</code>\n\n<b>Плейлисты:</b>\n"
             "• <code>Рар создай плейлист</code> [название]\n"
             "• <code>Рар добавь в</code> [плейлист]\n"
             "• <code>Рар удали</code> [песня] <code>из</code> [плейлист]\n"
@@ -1239,69 +1064,56 @@ async def handle_message(update, context):
             "• <code>Рар мои плейлисты</code>\n"
             "• <code>Рар дай плейлист</code>\n"
             "• <code>Рар найди плейлист</code> [название]\n"
-            "• <code>Рар топ плейлистов</code>\n\n"
-            "<b>Админ-система:</b>\n"
+            "• <code>Рар топ плейлистов</code>\n\n<b>Админ-система:</b>\n"
             "• <code>Рар админ</code> @user — показать ранг\n"
             "• <code>Рар админ +</code> @user — назначить (ст.)\n"
             "• <code>Рар админ ++</code> @user — повысить\n"
             "• <code>Рар админ -</code> @user — понизить\n"
             "• <code>Рар админ --</code> @user — снять\n"
-            "• <code>Рар админы</code> — список\n"
+            "• <code>Рар админы</code>\n"
             "• <code>Рар бан</code> @user [причина] (ст.)\n"
             "• <code>Рар разбан</code> @user (ст.)\n"
             "• <code>Рар кик</code> @user (ст.)\n"
             "• <code>Рар мут</code> @user [время] (ср.)\n"
-            "• <code>Рар размут</code> @user (ср.)\n"
-            "• <code>Рар удали</code> (ответом) (мл.)\n\n"
-            "<b>Настройки чата (админы Telegram):</b>\n"
+            "• <code>Рар размут</code> @user (ср.)\n\n<b>Настройки (админы):</b>\n"
             "• <code>Рар вкл/выкл приветствие</code>\n"
             "• <code>Рар вкл/выкл прощание</code>\n"
             "• <code>Рар измени приветствие/прощание</code> [текст]\n\n"
             "<b>Инлайн:</b> <code>@ChRarBot</code> / <code>дай песню</code> / <code>найди X</code> / <code>плейлист X</code> / <code>монетка</code>",
-            parse_mode="HTML")
-        return
+            parse_mode="HTML"); return
 
-    # РАР ПРОБЛЕМНЫЕ
     if clean in ["рар проблемные", "rar проблемные"]:
         if user_id != owner_id:
-            await update.message.reply_text("Эта команда доступна только моему создателю!"); return
+            await update.message.reply_text("Только для создателя!"); return
         broken = get_broken_tracks()
         if not broken:
             await update.message.reply_text("Проблемных треков нет!"); return
-        lines = [f"⚠️ Проблемные треки ({len(broken)}):\n"]
-        for tn, title in broken[:30]:
-            lines.append(f"• №{tn}: {title}")
-        if len(broken) > 30:
-            lines.append(f"...и ещё {len(broken) - 30}")
-        await update.message.reply_text("\n".join(lines))
-        return
+        lines = [f"⚠️ Проблемные ({len(broken)}):\n"]
+        for tn, title in broken[:30]: lines.append(f"• №{tn}: {title}")
+        if len(broken) > 30: lines.append(f"...и ещё {len(broken) - 30}")
+        await update.message.reply_text("\n".join(lines)); return
 
-    # РАР СОЗДАЙ ПЛЕЙЛИСТ
     create_pl = re.match(r"^(рар|rar)[,.]?\s+созда(й|ть)\s+плейлист\s+(.+)$", text, re.IGNORECASE)
     if create_pl:
         pl_name = create_pl.group(3).strip()
         pid, err = create_playlist(pl_name, user_id)
         if err == "exists":
-            await update.message.reply_text("Плейлист с таким названием уже есть!"); return
+            await update.message.reply_text("Такое название уже есть!"); return
         if err:
             await update.message.reply_text(f"Ошибка: {err}"); return
         await update.message.reply_text(f"✨ Плейлист <b>{html_escape(pl_name)}</b> создан!", parse_mode="HTML")
         uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
-        await notify_moderation(context, f"📋 <b>Создан плейлист</b>\nНазвание: {html_escape(pl_name)}\nКто: {html_escape(uname)} [ID: {user_id}]")
+        await notify_moderation(context, f"📋 <b>Создан плейлист</b>\n{html_escape(pl_name)}\nКто: {html_escape(uname)} [ID: {user_id}]")
         return
 
-    # РАР МОИ ПЛЕЙЛИСТЫ
     if clean in ["рар мои плейлисты", "rar мои плейлисты", "рар, мои плейлисты", "rar, мои плейлисты"]:
         pls = get_user_playlists(user_id)
         if not pls:
-            await update.message.reply_text("У тебя нет плейлистов. Создай: <code>Рар создай плейлист Мой топ</code>", parse_mode="HTML"); return
+            await update.message.reply_text("Нет плейлистов. Создай: <code>Рар создай плейлист Мой топ</code>", parse_mode="HTML"); return
         lines = ["✨ Твои плейлисты:\n"]
-        for pid, name, track_nums in pls:
-            lines.append(f"• {name} — {len(track_nums or [])} треков")
-        await update.message.reply_text("\n".join(lines))
-        return
+        for pid, name, track_nums in pls: lines.append(f"• {name} — {len(track_nums or [])} треков")
+        await update.message.reply_text("\n".join(lines)); return
 
-    # РАР ДАЙ ПЛЕЙЛИСТ
     if clean in ["рар дай плейлист", "rar дай плейлист", "рар, дай плейлист", "rar, дай плейлист"]:
         result = get_random_playlist_with_tracks(user_id)
         if not result:
@@ -1309,21 +1121,18 @@ async def handle_message(update, context):
         pid, pname, pl_owner, track_nums = result
         built = build_playlist_message(pid, 0)
         if not built:
-            await update.message.reply_text("Ошибка плейлиста"); return
+            await update.message.reply_text("Ошибка"); return
         text_msg, fid, kb = built
-        try:
-            await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
-        except Exception as e:
-            await log_to_owner(context, f"[PL SEND ERROR] {e}")
+        try: await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
+        except Exception as e: await log_to_owner(context, f"[PL SEND ERROR] {e}")
         return
 
-    # РАР НАЙДИ ПЛЕЙЛИСТ
     find_pl = re.match(r"^(рар|rar)[,.]?\s+най(ди|ти)\s+плейлист\s+(.+)$", text, re.IGNORECASE)
     if find_pl:
         pl_name = find_pl.group(3).strip()
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(f"Не нашла <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if not track_nums:
             await update.message.reply_text("Плейлист пуст!"); return
@@ -1332,85 +1141,72 @@ async def handle_message(update, context):
         if not built:
             await update.message.reply_text("Ошибка"); return
         text_msg, fid, kb = built
-        try:
-            await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
-        except Exception as e:
-            await log_to_owner(context, f"[PL SEND ERROR] {e}")
+        try: await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
+        except Exception as e: await log_to_owner(context, f"[PL SEND ERROR] {e}")
         return
 
-    # РАР ТОП ПЛЕЙЛИСТОВ
     if clean in ["рар топ плейлистов", "rar топ плейлистов"]:
         top = get_top_playlists(limit=10)
         if not top:
             await update.message.reply_text("Топ пуст!"); return
         lines = ["\n✨ Топ 10 плейлистов!!!\n"]
         for i, (name, searches) in enumerate(top, 1):
-            if i <= 3:
-                lines.append(f"✨{i}. {name} ({searches})✨")
-            else:
-                lines.append(f"• {i}. {name} ({searches})")
-        await update.message.reply_text("\n".join(lines))
-        return
+            if i <= 3: lines.append(f"✨{i}. {name} ({searches})✨")
+            else: lines.append(f"• {i}. {name} ({searches})")
+        await update.message.reply_text("\n".join(lines)); return
 
-    # РАР УДАЛИ X ИЗ Y
     del_from = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+?)\s+из\s+(?:плейлист[а]?\s+)?(.+)$", text, re.IGNORECASE)
     if del_from:
-        track_query = del_from.group(3).strip()
-        pl_name = del_from.group(4).strip()
+        track_query = del_from.group(3).strip(); pl_name = del_from.group(4).strip()
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(f"Не нашла <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Да что ты себе позволяешь?! Это не твой плейлист!!!!!!"); return
+            await update.message.reply_text("Да что ты себе позволяешь?! Не твой плейлист!!!!!!"); return
         if not track_nums:
             await update.message.reply_text("Плейлист пуст"); return
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("SELECT track_num, title FROM channel_music WHERE track_num = ANY(%s) AND LOWER(title) LIKE LOWER(%s)", (track_nums, f"%{track_query}%"))
         found = cursor.fetchone(); cursor.close(); conn.close()
         if not found:
-            await update.message.reply_text(f"Не нашла {track_query} в плейлисте {pl_name}"); return
+            await update.message.reply_text(f"Не нашла {track_query} в {pl_name}"); return
         found_tn, found_title = found
         remove_track_from_playlist(pid, found_tn)
-        await update.message.reply_text(f"Убрала {found_title} из плейлиста {pl_name}")
-        return
+        await update.message.reply_text(f"Убрала {found_title} из {pl_name}"); return
 
-    # РАР УДАЛИ ПЛЕЙЛИСТ
     del_pl = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(?:плейлист\s+)?(.+)$", text, re.IGNORECASE)
     if del_pl:
         pl_name = del_pl.group(3).strip()
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(f"Не нашла <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Да что ты себе позволяешь?! Это не твой плейлист!!!!!!"); return
+            await update.message.reply_text("Да что ты себе позволяешь?! Не твой плейлист!!!!!!"); return
         delete_playlist(pid)
         await update.message.reply_text(f"Плейлист <b>{html_escape(pname)}</b> удалён", parse_mode="HTML")
         uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
         await notify_moderation(context, f"🗑 <b>Удалён плейлист</b>\n{pname}\nКто: {uname}")
         return
 
-    # РАР ПЕРЕИМЕНУЙ
     ren_pl = re.match(r"^(рар|rar)[,.]?\s+переимену(й|ть)\s+(?:плейлист\s+)?(.+?)\s+в\s+(.+)$", text, re.IGNORECASE)
     if ren_pl:
-        old_name = ren_pl.group(3).strip()
-        new_name = ren_pl.group(4).strip()
+        old_name = ren_pl.group(3).strip(); new_name = ren_pl.group(4).strip()
         pl = get_playlist_by_name(old_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(old_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(f"Не нашла <b>{html_escape(old_name)}</b>", parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Да что ты себе позволяешь?! Это не твой плейлист!!!!!!"); return
+            await update.message.reply_text("Да что ты себе позволяешь?! Не твой плейлист!!!!!!"); return
         err = rename_playlist(pid, new_name)
         if err == "exists":
-            await update.message.reply_text("Плейлист с таким названием уже есть!"); return
+            await update.message.reply_text("Такое название уже есть!"); return
         await update.message.reply_text(f"Переименован: <b>{html_escape(old_name)}</b> → <b>{html_escape(new_name)}</b>", parse_mode="HTML")
         uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
         await notify_moderation(context, f"📝 <b>Переименован плейлист</b>\n{old_name} → {new_name}\nКто: {uname}")
         return
 
-    # РАР УДАЛИ ТРЕК ИЗ БД (owner, ответом на аудио)
     if clean in ["рар удали трек", "rar удали трек"]:
         if user_id != owner_id:
             await update.message.reply_text("Только для создателя!"); return
@@ -1421,32 +1217,25 @@ async def handle_message(update, context):
         title = audio.title.strip() if audio.title else ""
         fallback = f"{perf} - {title}" if perf and title else (audio.file_name or None)
         deleted = delete_track_from_db(audio.file_id, fallback)
-        if deleted:
-            await update.message.reply_text(f"Трек удалён: {deleted}")
-        else:
-            await update.message.reply_text("Не найден")
+        if deleted: await update.message.reply_text(f"Трек удалён: {deleted}")
+        else: await update.message.reply_text("Не найден")
         return
 
-    # ТОП ПЕСЕН
     if clean in ["рар топ песен", "rar топ песен", "рар топ песни", "rar топ песни"]:
         top = get_top_tracks(limit=10)
         if not top:
             await update.message.reply_text("Топ пуст!"); return
         lines = ["\n✨ Топ 10 треков!!!\n"]
         for i, (title, plays) in enumerate(top, 1):
-            if i <= 3:
-                lines.append(f"✨{i}. {title} ({plays})✨")
-            else:
-                lines.append(f"• {i}. {title} ({plays})")
-        await update.message.reply_text("\n".join(lines))
-        return
+            if i <= 3: lines.append(f"✨{i}. {title} ({plays})✨")
+            else: lines.append(f"• {i}. {title} ({plays})")
+        await update.message.reply_text("\n".join(lines)); return
 
-    # НАСТРОЙКИ ЧАТА
     toggle_map = {
-        "рар вкл приветствие": ("greet_enabled", True, "Приветствие новичков включено!"),
-        "рар выкл приветствие": ("greet_enabled", False, "Приветствие новичков выключено!"),
-        "rar вкл приветствие": ("greet_enabled", True, "Приветствие новичков включено!"),
-        "rar выкл приветствие": ("greet_enabled", False, "Приветствие новичков выключено!"),
+        "рар вкл приветствие": ("greet_enabled", True, "Приветствие включено!"),
+        "рар выкл приветствие": ("greet_enabled", False, "Приветствие выключено!"),
+        "rar вкл приветствие": ("greet_enabled", True, "Приветствие включено!"),
+        "rar выкл приветствие": ("greet_enabled", False, "Приветствие выключено!"),
         "рар вкл прощание": ("farewell_enabled", True, "Прощание включено!"),
         "рар выкл прощание": ("farewell_enabled", False, "Прощание выключено!"),
         "rar вкл прощание": ("farewell_enabled", True, "Прощание включено!"),
@@ -1458,9 +1247,9 @@ async def handle_message(update, context):
         try:
             sender = await context.bot.get_chat_member(chat_id, user_id)
             if sender.status not in ADMIN_STATUSES:
-                await update.message.reply_text("Только для админов Telegram"); return
+                await update.message.reply_text("Только для админов"); return
         except Exception:
-            await update.message.reply_text("Ошибка проверки"); return
+            await update.message.reply_text("Ошибка"); return
         field, val, msg = toggle_map[clean]
         update_chat_setting(chat_id, field, val)
         await update.message.reply_text(msg); return
@@ -1479,7 +1268,7 @@ async def handle_message(update, context):
         matched = matched_greet or matched_fare
         new_text = text.strip()[len(matched):].strip()
         if not new_text:
-            await update.message.reply_text("Напиши текст после команды!"); return
+            await update.message.reply_text("Напиши текст!"); return
         if matched_greet:
             update_chat_setting(chat_id, "greet_text", new_text)
             await update.message.reply_text(f"Приветствие обновлено:\n\n{new_text}")
@@ -1488,7 +1277,6 @@ async def handle_message(update, context):
             await update.message.reply_text(f"Прощание обновлено:\n\n{new_text}")
         return
 
-    # РАЗВЛЕЧЕНИЯ
     if clean in ["rar", "рар"]:
         if chat_id not in rar_replies_history: rar_replies_history[chat_id] = []
         avail = [a for a in answers_rar if a not in rar_replies_history[chat_id]] or answers_rar
@@ -1542,72 +1330,55 @@ async def handle_message(update, context):
             if chat_id not in recent_tracks_history or not isinstance(recent_tracks_history[chat_id], list):
                 recent_tracks_history[chat_id] = []
             avail = [t for t in tracks if t not in recent_tracks_history[chat_id]] or tracks
-            if not avail:
-                recent_tracks_history[chat_id] = []; avail = tracks
+            if not avail: recent_tracks_history[chat_id] = []; avail = tracks
             fid, ttitle = random.choice(avail)
             recent_tracks_history[chat_id].append(fid)
             lim = max(5, len(tracks) // 3)
             if len(recent_tracks_history[chat_id]) > lim: recent_tracks_history[chat_id].pop(0)
-            try:
-                await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"✨ Вот ваша песня!\n\n{ttitle}")
+            try: await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"✨ Вот ваша песня!\n\n{ttitle}")
             except Exception as e: print(f"[SEND AUDIO] {e}")
-        except Exception as e:
-            await update.message.reply_text(f"Ошибка: {e}")
+        except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
         return
 
-    # КАЛЛ (ср. админ или выше)
     if clean == "калл":
         if chat_id >= 0:
             await update.message.reply_text("Только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID):
-            return
-
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         try:
             user_ids = get_chat_members(chat_id)
             if not user_ids:
                 await update.message.reply_text("Список пуст"); return
-
             valid = [STATUS_MEMBER, STATUS_ADMINISTRATOR, STATUS_CREATOR, STATUS_RESTRICTED]
             tags, to_remove = [], []
-
             for m_id in user_ids:
                 m_id_int = int(m_id)
                 if m_id_int in (int(context.bot.id), GROUP_ANON_BOT_ID): continue
-                try:
-                    member = await context.bot.get_chat_member(chat_id, m_id_int)
+                try: member = await context.bot.get_chat_member(chat_id, m_id_int)
                 except Exception as e:
                     err = str(e).lower()
-                    if "not found" in err or "participant not found" in err:
-                        to_remove.append(m_id_int); continue
+                    if "not found" in err or "participant not found" in err: to_remove.append(m_id_int)
                     continue
-                if member.status == STATUS_LEFT:
-                    to_remove.append(m_id_int); continue
+                if member.status == STATUS_LEFT: to_remove.append(m_id_int); continue
                 if member.status in (STATUS_KICKED, STATUS_BANNED): continue
                 if member.status not in valid: continue
                 uname = member.user.username
                 fname = member.user.first_name or "друг"
                 display = f"@{uname}" if uname else fname
                 tags.append(f'<a href="tg://user?id={m_id_int}">{html_escape(display)}</a>')
-
             if to_remove:
                 try:
                     remove_users_from_chat_batch(to_remove, chat_id)
                     for uid in to_remove: uncache_user(uid, chat_id)
                 except Exception: pass
-
             if not tags:
-                await update.message.reply_text("Нет активных участников"); return
-
+                await update.message.reply_text("Нет активных"); return
             for i in range(0, len(tags), 6):
                 chunk = tags[i:i+6]
-                try:
-                    await update.message.reply_text("<b>Минуточку внимания!!!</b>\n\n" + "\n".join(chunk), parse_mode="HTML")
+                try: await update.message.reply_text("<b>Минуточку внимания!!!</b>\n\n" + "\n".join(chunk), parse_mode="HTML")
                 except Exception: pass
-        except Exception as e:
-            await log_to_owner(context, f"[КАЛЛ FATAL] {e}")
+        except Exception as e: await log_to_owner(context, f"[КАЛЛ FATAL] {e}")
         return
 
-    # НАЙДИ ТРЕК
     find_track = re.match(r"^(рар|rar)[,.]?\s+най(ди|ти)\s+(.+)$", text, re.IGNORECASE)
     if find_track:
         query = find_track.group(3).strip()
@@ -1623,11 +1394,8 @@ async def handle_message(update, context):
                 increment_play(fid)
             except Exception as e: print(f"[FIND SEND] {e}")
             return
-        else:
-            await status_msg.edit_text("Такой песни нет в коллекции")
+        else: await status_msg.edit_text("Не нашла такую песню")
 
-
-# ==================== CHAT_MEMBER ====================
 
 async def handle_chat_member(update, context):
     try:
@@ -1639,67 +1407,49 @@ async def handle_chat_member(update, context):
         old_status = result.old_chat_member.status
         if user.is_bot or chat_id >= 0: return
         if user.id == GROUP_ANON_BOT_ID: return
-
         greet_enabled, farewell_enabled, greet_text, farewell_text = get_chat_settings(chat_id)
         try:
             chat = await context.bot.get_chat(chat_id)
             chat_title = chat.title or "этот чат"
-        except Exception:
-            chat_title = "этот чат"
+        except Exception: chat_title = "этот чат"
         user_name = user.first_name or "друг"
-
         if old_status in LEAVE_STATUSES and new_status in IN_CHAT_STATUSES:
-            try:
-                save_user_to_chat(user.id, chat_id); cache_user(user.id, chat_id)
+            try: save_user_to_chat(user.id, chat_id); cache_user(user.id, chat_id)
             except Exception: pass
             if greet_enabled:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=substitute_vars(greet_text, user_name, chat_title))
+                try: await context.bot.send_message(chat_id=chat_id, text=substitute_vars(greet_text, user_name, chat_title))
                 except Exception: pass
         elif old_status in IN_CHAT_STATUSES and new_status in LEAVE_STATUSES:
-            try:
-                remove_user_from_chat(user.id, chat_id); uncache_user(user.id, chat_id)
+            try: remove_user_from_chat(user.id, chat_id); uncache_user(user.id, chat_id)
             except Exception: pass
             if farewell_enabled:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=substitute_vars(farewell_text, user_name, chat_title))
+                try: await context.bot.send_message(chat_id=chat_id, text=substitute_vars(farewell_text, user_name, chat_title))
                 except Exception: pass
-    except Exception as e:
-        print(f"[CHAT_MEMBER FATAL] {e}")
+    except Exception as e: print(f"[CHAT_MEMBER FATAL] {e}")
 
 
 async def handle_my_chat_member(update, context):
     try:
         result = update.my_chat_member
         if not result: return
-        chat = result.chat
-        chat_id = chat.id
+        chat = result.chat; chat_id = chat.id
         new_status = result.new_chat_member.status
         old_status = result.old_chat_member.status
         if chat_id >= 0: return
-
         if new_status in LEAVE_STATUSES:
-            try:
-                remove_chat_data(chat_id)
-                _creator_cache.pop(chat_id, None)
+            try: remove_chat_data(chat_id); _creator_cache.pop(chat_id, None)
             except Exception: pass
             return
-
         if old_status not in ADMIN_STATUSES and new_status in ADMIN_STATUSES:
             now = time.time()
-            if chat_id in _recent_greets and now - _recent_greets[chat_id] < GREET_DEDUP_TTL:
-                return
-            try:
-                await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
+            if chat_id in _recent_greets and now - _recent_greets[chat_id] < GREET_DEDUP_TTL: return
+            try: await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать✨")
             except Exception: pass
             return
-
         if old_status in ADMIN_STATUSES and new_status not in ADMIN_STATUSES:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
+            try: await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
             except Exception: pass
             return
-
         if old_status not in IN_CHAT_STATUSES and new_status in IN_CHAT_STATUSES:
             _recent_greets[chat_id] = time.time()
             _creator_cache.pop(chat_id, None)
@@ -1708,20 +1458,14 @@ async def handle_my_chat_member(update, context):
                 for admin in admins:
                     if admin.user.is_bot: continue
                     if admin.user.id == GROUP_ANON_BOT_ID: continue
-                    save_user_to_chat(admin.user.id, chat_id)
-                    cache_user(admin.user.id, chat_id)
+                    save_user_to_chat(admin.user.id, chat_id); cache_user(admin.user.id, chat_id)
             except Exception: pass
-            text = ("Здравствуйте! Я Rar – ваш универсальный помощник.\n\n"
-                    "Для моей корректной работы предоставьте мне права админа, спасибо!\n\n"
+            text = ("Здравствуйте! Я Rar.\n\nДля работы дайте мне права админа, пожалуйста!\n\n"
                     "Команды: <code>Рар команды</code>")
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            try: await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
             except Exception: pass
-    except Exception as e:
-        print(f"[MY_CHAT_MEMBER FATAL] {e}")
+    except Exception as e: print(f"[MY_CHAT_MEMBER FATAL] {e}")
 
-
-# ==================== ФОНОВЫЕ ====================
 
 async def daily_track_loop(app):
     await asyncio.sleep(60)
@@ -1732,8 +1476,7 @@ async def daily_track_loop(app):
                 tracks = get_all_tracks_from_db(only_ok=True)
                 if tracks:
                     fid, title = random.choice(tracks)
-                    try:
-                        await app.bot.send_audio(chat_id=notify, audio=fid, caption=f"🎵 Ежедневный трек:\n{title}")
+                    try: await app.bot.send_audio(chat_id=notify, audio=fid, caption=f"🎵 Ежедневный трек:\n{title}")
                     except Exception: pass
         except Exception: pass
         await asyncio.sleep(86400)
@@ -1757,14 +1500,16 @@ async def error_handler(update, context):
     try:
         owner_id = get_owner_id()
         if owner_id:
+            is_network = any(kw in err_text for kw in ["httpx", "httpcore", "ReadTimeout", "ConnectTimeout", "ConnectionError", "NetworkError", "TimedOut"])
+            if is_network:
+                print(f"[NETWORK ERROR] {err_text}"); return
             is_noise = ("bot was kicked from the group chat" in err_text
                         or "bot was blocked by the user" in err_text
                         or "chat not found" in err_text)
             prefix = "ℹ️ NOISE" if is_noise else "⚠️ ERROR"
             await context.bot.send_message(chat_id=owner_id,
                 text=f"{prefix}\n<code>{err_text[:600]}</code>\n\n<pre>{tb[:1500]}</pre>", parse_mode="HTML")
-    except Exception as e:
-        print(f"[ERROR HANDLER SEND FAIL] {e}")
+    except Exception as e: print(f"[ERROR HANDLER SEND FAIL] {e}")
 
 
 async def handle_http(request):
@@ -1801,10 +1546,7 @@ def main():
     app.add_handler(CallbackQueryHandler(playlist_nav_handler, pattern=r"^pl_\d+_\d+$"))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     print("Запуск бота...")
-    app.run_polling(allowed_updates=[
-        "message", "chat_member", "my_chat_member",
-        "inline_query", "chosen_inline_result", "callback_query"
-    ])
+    app.run_polling(allowed_updates=["message", "chat_member", "my_chat_member", "inline_query", "chosen_inline_result", "callback_query"])
 
 
 if __name__ == "__main__":
