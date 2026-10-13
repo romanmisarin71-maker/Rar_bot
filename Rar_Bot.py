@@ -834,10 +834,14 @@ async def handle_message(update, context):
         if not await check_user_rank(update, context, chat_id, user_id, RANK_LOW):
             return
         found_iris = False
-        all_members = get_chat_members(chat_id)
-        for mid in all_members:
-            if int(mid) in IRIS_IDS:
-                found_iris = True; break
+        for iris_id in IRIS_IDS:
+            try:
+                m = await context.bot.get_chat_member(chat_id, iris_id)
+                if m.status in IN_CHAT_STATUSES:
+                    found_iris = True
+                    break
+            except Exception:
+                continue
         if not found_iris:
             await update.message.reply_text("Я не нашла мою цель..."); return
         count = int(battle_match.group(2)) if battle_match.group(2) else 5
