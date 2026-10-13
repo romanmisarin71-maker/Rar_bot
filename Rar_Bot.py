@@ -33,6 +33,21 @@ RANK_MID = 2
 RANK_SENIOR = 3
 RANK_NAMES = {0: "не админ", 1: "мл. админ", 2: "ср. админ", 3: "ст. админ"}
 
+IRIS_IDS = {5443619563, 5226378684, 707693258, 5434504334}
+
+battle_start_phrases = [
+    "Ну все, Ирис!!! Приготовься!!!",
+    "ИРИИИС!!! Сейчас будет жарко!!!",
+    "Готов получить пулю в лоб, Ирис!?!?",
+]
+battle_final_sounds = ["БДЫЩ", "БАХ", "ПАФ"]
+battle_win_phrases = [
+    "ПОПАЛА!!! ПОБЕДА ЗА МНОЙ!!!",
+    "ХААА!!! В ЯБЛОЧКО!!!",
+    "ЕСТЬ!!! ПРЯМОЕ ПОПАДАНИЕ!!!",
+]
+battle_state = {}
+
 _creator_cache = {}
 CREATOR_CACHE_TTL = 3600
 
@@ -79,12 +94,45 @@ def init_db():
         chat_id BIGINT PRIMARY KEY, user_ids BIGINT[] DEFAULT '{}')""")
     cursor.execute("""CREATE TABLE IF NOT EXISTS system_settings (
         key TEXT PRIMARY KEY, value TEXT)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS usernames (
+        user_id BIGINT PRIMARY KEY, username TEXT)""")
     cursor.execute("""CREATE TABLE IF NOT EXISTS chat_admins (
         chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
         rank INTEGER NOT NULL, assigned_by BIGINT,
         assigned_at TIMESTAMP DEFAULT NOW(),
         PRIMARY KEY (chat_id, user_id))""")
     conn.commit(); cursor.close(); conn.close()
+
+
+def save_username(user_id, username):
+    if not username: return
+    try:
+        conn = get_db_connection(); cursor = conn.cursor()
+        cursor.execute("""INSERT INTO usernames (user_id, username) VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username""",
+            (user_id, username.lower()))
+        conn.commit(); cursor.close(); conn.close()
+    except Exception: pass
+
+
+def find_user_by_username(username):
+    if not username: return None
+    username = username.lstrip("@").lower()
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM usernames WHERE username = %s", (username,))
+    row = cursor.fetchone(); cursor.close(); conn.close()
+    return row[0] if row else None
+
+
+async def resolve_target(update, context, chat_id, target_arg):
+    if not target_arg: return None
+    target_arg = target_arg.strip()
+    if target_arg.startswith("@"):
+        return find_user_by_username(target_arg)
+    try:
+        return int(target_arg)
+    except ValueError:
+        return None
 
 
 def get_admin_rank(chat_id, user_id):
@@ -144,6 +192,36 @@ async def check_user_rank(update, context, chat_id, user_id, required_rank):
         await update.message.reply_text("Не дорос еще! Недостаточно прав!!!")
         return False
     return True
+
+
+async def iris_battle(update, context, chat_id, count):
+    start_phrase = random.choice(battle_start_phrases)
+    await context.bot.send_message(chat_id=chat_id, text=f"<b>{start_phrase}</b>", parse_mode="HTML")
+    await asyncio.sleep(5)
+    battle_state[chat_id] = {"active": True, "last_iris_reply": time.time()}
+    for i in range(count):
+        await context.bot.send_message(chat_id=chat_id, text="<b>ПИУ</b>", parse_mode="HTML")
+        wait_start = time.time()
+        answered = False
+        while time.time() - wait_start < 6:
+            st = battle_state.get(chat_id, {})
+            if st.get("last_iris_reply", 0) > wait_start:
+                answered = True; break
+            await asyncio.sleep(0.5)
+        if not answered:
+            battle_state.pop(chat_id, None)
+            await context.bot.send_message(chat_id=chat_id, text="<b>Эммм...</b>", parse_mode="HTML")
+            return
+        await asyncio.sleep(1)
+    battle_state.pop(chat_id, None)
+    if random.randint(1, 10) == 10:
+        await context.bot.send_message(chat_id=chat_id, text="<b>ПШШШ... МИМО...</b>", parse_mode="HTML")
+        return
+    final_sound = random.choice(battle_final_sounds)
+    await context.bot.send_message(chat_id=chat_id, text=f"<b>{final_sound}</b>", parse_mode="HTML")
+    await asyncio.sleep(1)
+    win_phrase = random.choice(battle_win_phrases)
+    await context.bot.send_message(chat_id=chat_id, text=f"<b>{win_phrase}</b>", parse_mode="HTML")
 
 
 def save_track_to_db(file_id, title, added_by):
@@ -731,7 +809,16 @@ async def handle_message(update, context):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     username = update.effective_user.username
+    save_username(user_id, username)
     owner_id = get_owner_id()
+
+    if update.effective_user.id in IRIS_IDS:
+        txt = (update.message.text or "").strip().upper()
+        if txt == "ПАУ":
+            st = battle_state.get(chat_id)
+            if st and st.get("active"):
+                st["last_iris_reply"] = time.time()
+
     if chat_id < 0 and not is_user_cached(user_id, chat_id):
         try: save_user_to_chat(user_id, chat_id); cache_user(user_id, chat_id)
         except Exception: pass
@@ -740,25 +827,40 @@ async def handle_message(update, context):
     elif update.message.caption: incoming = update.message.caption.lower().strip()
     text = update.message.text or ""
 
-    admin_match = re.match(r"^(рар|rar)[,.]?\s+админ(?:\s+(\+\+|--|\+|-))?\s*(.*)$", text, re.IGNORECASE)
+    battle_match = re.match(r"^(рар|rar)[,.]?\s+перестрелка(?:\s+(\d+))?\s*$", text, re.IGNORECASE)
+    if battle_match:
+        if chat_id >= 0:
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_LOW):
+            return
+        found_iris = False
+        all_members = get_chat_members(chat_id)
+        for mid in all_members:
+            if int(mid) in IRIS_IDS:
+                found_iris = True; break
+        if not found_iris:
+            await update.message.reply_text("Я не нашла мою цель..."); return
+        count = int(battle_match.group(2)) if battle_match.group(2) else 5
+        if count > 10: count = 10
+        if count < 1: count = 1
+        asyncio.create_task(iris_battle(update, context, chat_id, count))
+        return
+
+    admin_match = re.match(r"^(рар|rar)[,.]?\s+админ\b(?:\s+(\+\+|--|\+|-))?\s*(.*)$", text, re.IGNORECASE)
     if admin_match:
         action = admin_match.group(2); target_arg = admin_match.group(3).strip()
         target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
         elif target_arg:
-            if target_arg.startswith("@"):
+            uid = await resolve_target(update, context, chat_id, target_arg)
+            if uid:
                 try:
-                    member = await context.bot.get_chat_member(chat_id, target_arg)
-                    target_user = member.user
-                except Exception:
-                    await update.message.reply_text("Не могу найти по username. Ответь на сообщение!"); return
-            else:
-                try: target_user = await context.bot.get_chat(int(target_arg))
-                except Exception:
-                    await update.message.reply_text("Не понял кого. Ответь или укажи @username."); return
+                    m = await context.bot.get_chat_member(chat_id, uid)
+                    target_user = m.user
+                except Exception: target_user = None
         if not target_user:
-            await update.message.reply_text("Не понял кого. Ответь или укажи @username."); return
+            await update.message.reply_text("Ответь на сообщение или укажи @username."); return
         if action is None:
             rank = get_admin_rank(chat_id, target_user.id)
             creator = await get_chat_creator(chat_id, context)
@@ -810,19 +912,29 @@ async def handle_message(update, context):
             if new_rank == RANK_NONE:
                 await context.bot.promote_chat_member(chat_id, target_user.id,
                     can_delete_messages=False, can_restrict_members=False, can_invite_users=False,
-                    can_manage_chat=False, can_promote_members=False, can_change_info=False, can_pin_messages=False)
+                    can_manage_chat=False, can_promote_members=False, can_change_info=False,
+                    can_pin_messages=False, can_manage_topics=False)
+            elif new_rank == RANK_LOW:
+                await context.bot.promote_chat_member(chat_id, target_user.id,
+                    can_delete_messages=True, can_restrict_members=False, can_invite_users=False,
+                    can_manage_chat=False, can_promote_members=False, can_change_info=False,
+                    can_pin_messages=False, can_manage_topics=False)
+            elif new_rank == RANK_MID:
+                await context.bot.promote_chat_member(chat_id, target_user.id,
+                    can_delete_messages=True, can_restrict_members=True, can_invite_users=True,
+                    can_manage_chat=False, can_promote_members=False, can_change_info=False,
+                    can_pin_messages=False, can_manage_topics=False)
             else:
                 await context.bot.promote_chat_member(chat_id, target_user.id,
-                    can_delete_messages=True, can_restrict_members=(new_rank >= RANK_MID),
-                    can_invite_users=(new_rank >= RANK_MID), can_manage_chat=False,
-                    can_promote_members=False, can_change_info=False, can_pin_messages=False)
+                    can_delete_messages=True, can_restrict_members=True, can_invite_users=True,
+                    can_manage_chat=True, can_promote_members=True, can_change_info=True,
+                    can_pin_messages=True, can_manage_topics=True)
         except Exception as e:
             await log_to_owner(context, f"[PROMOTE ERROR] {e}")
             await update.message.reply_text(f"Не смогла изменить права: {e}"); return
         set_admin_rank(chat_id, target_user.id, new_rank, user_id)
         await update.message.reply_text(f"{target_user.first_name} теперь {RANK_NAMES.get(new_rank, 'не админ')}")
-        uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
-        await notify_moderation(context, f"🛡 <b>Изменение ранга</b>\n{target_user.first_name} → {RANK_NAMES.get(new_rank, 'не админ')}\nКто: {uname}")
+        await log_to_owner(context, f"[RANK] {target_user.first_name} → {RANK_NAMES.get(new_rank, 'не админ')} (by {user_id})")
         return
 
     if incoming in ["рар админы", "rar админы", "рар, админы", "rar, админы"]:
@@ -853,12 +965,11 @@ async def handle_message(update, context):
         elif reason:
             parts = reason.split(None, 1); target_arg = parts[0]
             reason = parts[1] if len(parts) > 1 else ""
-            try:
-                if target_arg.startswith("@"):
-                    m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
-                else: target_user = await context.bot.get_chat(int(target_arg))
-            except Exception:
-                await update.message.reply_text("Не понял кого"); return
+            uid = await resolve_target(update, context, chat_id, target_arg)
+            if uid:
+                try:
+                    m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
+                except Exception: target_user = None
         if not target_user:
             await update.message.reply_text("Ответь или укажи @username"); return
         creator = await get_chat_creator(chat_id, context)
@@ -869,7 +980,7 @@ async def handle_message(update, context):
             msg = f"{target_user.first_name} забанен"
             if reason: msg += f". Причина: {reason}"
             await update.message.reply_text(msg)
-            await notify_moderation(context, f"🔨 <b>Бан</b>\n{target_user.first_name} [ID: {target_user.id}]\nЧат: {chat_id}\nПричина: {reason or '—'}")
+            await log_to_owner(context, f"[BAN] {target_user.first_name} [ID: {target_user.id}] Чат: {chat_id}. Причина: {reason or '—'}")
         except Exception as e:
             await update.message.reply_text("У меня недостаточно прав для бана, выдайте пожалуйста!!!")
             await log_to_owner(context, f"[BAN ERROR] {e}")
@@ -884,11 +995,11 @@ async def handle_message(update, context):
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
         elif target_arg:
-            try:
-                if target_arg.startswith("@"):
-                    m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
-                else: target_user = await context.bot.get_chat(int(target_arg))
-            except Exception: pass
+            uid = await resolve_target(update, context, chat_id, target_arg)
+            if uid:
+                try:
+                    m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
+                except Exception: target_user = None
         if not target_user:
             await update.message.reply_text("Ответь или укажи @username"); return
         try:
@@ -910,11 +1021,11 @@ async def handle_message(update, context):
         else:
             target_arg = kick_match.group(2).strip()
             if target_arg:
-                try:
-                    if target_arg.startswith("@"):
-                        m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
-                    else: target_user = await context.bot.get_chat(int(target_arg))
-                except Exception: pass
+                uid = await resolve_target(update, context, chat_id, target_arg)
+                if uid:
+                    try:
+                        m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
+                    except Exception: target_user = None
         if not target_user:
             await update.message.reply_text("Ответь или укажи @username"); return
         creator = await get_chat_creator(chat_id, context)
@@ -942,11 +1053,11 @@ async def handle_message(update, context):
             parts = args.split(None, 1); target_arg = parts[0]
             dur_text = parts[1] if len(parts) > 1 else ""
             duration_seconds = parse_duration(dur_text)
-            try:
-                if target_arg.startswith("@"):
-                    m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
-                else: target_user = await context.bot.get_chat(int(target_arg))
-            except Exception: pass
+            uid = await resolve_target(update, context, chat_id, target_arg)
+            if uid:
+                try:
+                    m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
+                except Exception: target_user = None
         if not target_user:
             await update.message.reply_text("Ответь или укажи @username"); return
         if duration_seconds is None: duration_seconds = 600
@@ -971,11 +1082,11 @@ async def handle_message(update, context):
         else:
             target_arg = unmute_match.group(2).strip()
             if target_arg:
-                try:
-                    if target_arg.startswith("@"):
-                        m = await context.bot.get_chat_member(chat_id, target_arg); target_user = m.user
-                    else: target_user = await context.bot.get_chat(int(target_arg))
-                except Exception: pass
+                uid = await resolve_target(update, context, chat_id, target_arg)
+                if uid:
+                    try:
+                        m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
+                    except Exception: target_user = None
         if not target_user:
             await update.message.reply_text("Ответь или укажи @username"); return
         try:
@@ -1065,6 +1176,7 @@ async def handle_message(update, context):
             "• <code>Рар дай плейлист</code>\n"
             "• <code>Рар найди плейлист</code> [название]\n"
             "• <code>Рар топ плейлистов</code>\n\n<b>Админ-система:</b>\n"
+            "• <code>Рар перестрелка</code> [N] — бой с Ирисом (мл.)\n"
             "• <code>Рар админ</code> @user — показать ранг\n"
             "• <code>Рар админ +</code> @user — назначить (ст.)\n"
             "• <code>Рар админ ++</code> @user — повысить\n"
