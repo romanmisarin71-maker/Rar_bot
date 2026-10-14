@@ -78,6 +78,9 @@ def init_db():
     cursor.execute("CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS usernames (user_id BIGINT PRIMARY KEY, username TEXT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS chat_admins (chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL, rank INTEGER NOT NULL, assigned_by BIGINT, assigned_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY (chat_id, user_id))")
+    cursor.execute("CREATE TABLE IF NOT EXISTS sleuths (id SERIAL PRIMARY KEY, chat_id BIGINT NOT NULL, target_id BIGINT NOT NULL, target_name TEXT, admin_id BIGINT NOT NULL, admin_name TEXT, required_count INTEGER NOT NULL, current_count INTEGER DEFAULT 0, duration_seconds INTEGER NOT NULL, action TEXT DEFAULT 'none', started_at TIMESTAMP DEFAULT NOW(), deadline TIMESTAMP NOT NULL)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sleuths_chat ON sleuths(chat_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sleuths_target ON sleuths(chat_id, target_id)")
     conn.commit(); cursor.close(); conn.close()
 
 
@@ -129,6 +132,47 @@ def get_all_admins(chat_id):
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT user_id, rank FROM chat_admins WHERE chat_id = %s ORDER BY rank DESC", (chat_id,))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
+
+
+def sleuth_create(chat_id, target_id, target_name, admin_id, admin_name, required_count, duration_seconds, action):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("DELETE FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, target_id))
+    deadline_ts = time.time() + duration_seconds
+    cursor.execute("INSERT INTO sleuths (chat_id, target_id, target_name, admin_id, admin_name, required_count, current_count, duration_seconds, action, deadline) VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, TO_TIMESTAMP(%s))", (chat_id, target_id, target_name, admin_id, admin_name, required_count, duration_seconds, action, deadline_ts))
+    conn.commit(); cursor.close(); conn.close()
+
+
+def sleuth_get(chat_id, target_id):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT id, target_id, target_name, admin_id, admin_name, required_count, current_count, duration_seconds, action, deadline FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, target_id))
+    row = cursor.fetchone(); cursor.close(); conn.close()
+    return row
+
+
+def sleuth_get_all(chat_id):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT id, target_id, target_name, admin_id, admin_name, required_count, current_count, duration_seconds, action, deadline FROM sleuths WHERE chat_id = %s ORDER BY started_at DESC", (chat_id,))
+    rows = cursor.fetchall(); cursor.close(); conn.close()
+    return rows
+
+
+def sleuth_delete(chat_id, target_id):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("DELETE FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, target_id))
+    conn.commit(); cursor.close(); conn.close()
+
+
+def sleuth_delete_by_id(sid):
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("DELETE FROM sleuths WHERE id = %s", (sid,))
+    conn.commit(); cursor.close(); conn.close()
+
+
+def sleuth_get_expired():
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("SELECT id, chat_id, target_id, target_name, admin_id, admin_name, required_count, current_count, duration_seconds, action FROM sleuths WHERE deadline <= NOW()")
+    rows = cursor.fetchall(); cursor.close(); conn.close()
+    return rows
 
 
 async def get_chat_creator(chat_id, context):
@@ -856,6 +900,7 @@ def remove_user_from_chat(user_id, chat_id):
     cursor.execute("UPDATE chat_members SET user_ids = array_remove(user_ids, %s::BIGINT) WHERE chat_id = %s", (user_id, chat_id))
     cursor.execute("DELETE FROM chat_members WHERE chat_id = %s AND cardinality(user_ids) = 0", (chat_id,))
     cursor.execute("DELETE FROM chat_admins WHERE chat_id = %s AND user_id = %s", (chat_id, user_id))
+    cursor.execute("DELETE FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, user_id))
     conn.commit(); cursor.close(); conn.close()
 
 
@@ -865,6 +910,7 @@ def remove_users_from_chat_batch(user_ids, chat_id):
     for uid in user_ids:
         cursor.execute("UPDATE chat_members SET user_ids = array_remove(user_ids, %s::BIGINT) WHERE chat_id = %s", (int(uid), chat_id))
         cursor.execute("DELETE FROM chat_admins WHERE chat_id = %s AND user_id = %s", (chat_id, int(uid)))
+        cursor.execute("DELETE FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, int(uid)))
     cursor.execute("DELETE FROM chat_members WHERE chat_id = %s AND cardinality(user_ids) = 0", (chat_id,))
     conn.commit(); cursor.close(); conn.close()
 
@@ -874,6 +920,7 @@ def remove_chat_data(chat_id):
     cursor.execute("DELETE FROM chat_members WHERE chat_id = %s", (chat_id,))
     cursor.execute("DELETE FROM chat_settings WHERE chat_id = %s", (chat_id,))
     cursor.execute("DELETE FROM chat_admins WHERE chat_id = %s", (chat_id,))
+    cursor.execute("DELETE FROM sleuths WHERE chat_id = %s", (chat_id,))
     conn.commit(); cursor.close(); conn.close()
 
 
@@ -1198,6 +1245,30 @@ async def handle_message(update, context):
     elif update.message.caption: incoming = update.message.caption.lower().strip()
     text = update.message.text or ""
 
+    # Учёт сообщений для слежки
+    if chat_id < 0:
+        txt_check = (update.message.text or "").strip().lower()
+        is_command = txt_check.startswith("рар ") or txt_check.startswith("rar ") or txt_check == "рар" or txt_check == "rar"
+        has_photo_only = update.message.photo and not update.message.caption
+        if not is_command and not has_photo_only:
+            try:
+                conn = get_db_connection(); cursor = conn.cursor()
+                cursor.execute("UPDATE sleuths SET current_count = current_count + 1 WHERE chat_id = %s AND target_id = %s", (chat_id, user_id))
+                conn.commit()
+                cursor.execute("SELECT required_count, current_count, target_name, admin_name, target_id, admin_id FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, user_id))
+                row = cursor.fetchone(); cursor.close(); conn.close()
+                if row and row[1] >= row[0]:
+                    req, cur, tname, aname, tid, aid = row
+                    sleuth_delete(chat_id, user_id)
+                    t_display = f"@{tname}" if tname else f"ID {tid}"
+                    a_display = f"@{aname}" if aname else f"ID {aid}"
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=f"Слежка завершена. {t_display} набрал {cur}/{req}. Наблюдатель: {a_display}.")
+                    except Exception: pass
+                    await log_to_owner(context, f"[SLEUTH DONE] {t_display} {cur}/{req} chat={chat_id}")
+            except Exception as e:
+                print(f"[SLEUTH COUNT ERROR] {e}")
+
     # Дуэль: ответы игрока
     if incoming.upper() in DUEL_ACTIONS:
         handled = False
@@ -1235,6 +1306,110 @@ async def handle_message(update, context):
         hard = bool(duel_match.group(3))
         await duel_start(update, context, hard=hard)
         return
+
+    # РАР СЛЕЖКА
+    sleuth_match = re.match(r"^(рар|rar)[,.]?\s+слежка\s+(.+)$", text, re.IGNORECASE)
+    if sleuth_match:
+        if chat_id >= 0:
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID):
+            return
+        args_raw = sleuth_match.group(2).strip()
+        actor_creator = await get_chat_creator(chat_id, context)
+        actor_rank = get_admin_rank(chat_id, user_id)
+        actor_is_creator = (actor_creator and user_id == actor_creator)
+        target_user = None
+        rest = args_raw
+        if update.message.reply_to_message and update.message.reply_to_message.from_user:
+            target_user = update.message.reply_to_message.from_user
+        else:
+            parts = args_raw.split(None, 1)
+            if parts and parts[0].startswith("@"):
+                uid = find_user_by_username(parts[0])
+                if uid:
+                    try:
+                        m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
+                    except Exception: target_user = None
+                rest = parts[1] if len(parts) > 1 else ""
+        if not target_user:
+            await update.message.reply_text("Ответь на сообщение или укажи @username."); return
+        dur_match = re.search(r"((?:\d+\s*[дчмсДЧМС]\s*)+)", rest, re.IGNORECASE)
+        if not dur_match:
+            await update.message.reply_text("Укажи срок, например: 2д 12ч"); return
+        duration_seconds = parse_duration(dur_match.group(1))
+        if not duration_seconds:
+            await update.message.reply_text("Не понял срок"); return
+        rest_after_dur = rest[dur_match.end():].strip()
+        count_match = re.search(r"(\d+)", rest_after_dur)
+        if not count_match:
+            await update.message.reply_text("Укажи норму, например: 150"); return
+        required = int(count_match.group(1))
+        action_part = rest_after_dur[count_match.end():].strip().lower()
+        action = "none"
+        if "бан" in action_part: action = "ban"
+        elif "кик" in action_part: action = "kick"
+        if action in ("ban", "kick") and not actor_is_creator and actor_rank < RANK_SENIOR:
+            await update.message.reply_text("Бан/кик слежку может вешать только старший админ или создатель!"); return
+        sleuth_create(chat_id, target_user.id, target_user.username, user_id, username, required, duration_seconds, action)
+        t_display = f"@{target_user.username}" if target_user.username else f'<a href="tg://user?id={target_user.id}">{target_user.first_name}</a>'
+        dur_str = format_duration(duration_seconds)
+        await update.message.reply_text(f"Слежка начата. Цель: {t_display}. Норма: {required} за {dur_str}.", parse_mode="HTML")
+        await log_to_owner(context, f"[SLEUTH START] target={target_user.id} by={user_id} req={required} dur={duration_seconds} action={action} chat={chat_id}")
+        return
+
+    # РАР СНЯТЬ СЛЕЖКУ
+    unsleuth_match = re.match(r"^(рар|rar)[,.]?\s+(?:снять|сними)\s+слежку\s*(.*)$", text, re.IGNORECASE)
+    if unsleuth_match:
+        if chat_id >= 0:
+            await update.message.reply_text("Только в группах"); return
+        target_arg = unsleuth_match.group(2).strip()
+        target_user = None
+        if update.message.reply_to_message and update.message.reply_to_message.from_user:
+            target_user = update.message.reply_to_message.from_user
+        elif target_arg:
+            if target_arg.startswith("@"):
+                uid = find_user_by_username(target_arg)
+                if uid:
+                    try:
+                        m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
+                    except Exception: target_user = None
+            else:
+                try:
+                    m = await context.bot.get_chat_member(chat_id, int(target_arg)); target_user = m.user
+                except Exception: pass
+        if not target_user:
+            await update.message.reply_text("Ответь на сообщение или укажи @username."); return
+        row = sleuth_get(chat_id, target_user.id)
+        if not row:
+            await update.message.reply_text("Нет активной слежки на этого пользователя"); return
+        admin_id = row[3]
+        creator = await get_chat_creator(chat_id, context)
+        if user_id != admin_id and not (creator and user_id == creator):
+            await update.message.reply_text("Снять слежку может только тот, кто её повесил, или создатель чата."); return
+        sleuth_delete(chat_id, target_user.id)
+        t_display = f"@{target_user.username}" if target_user.username else f'<a href="tg://user?id={target_user.id}">{target_user.first_name}</a>'
+        await update.message.reply_text(f"Слежка снята. Цель: {t_display}.", parse_mode="HTML")
+        await log_to_owner(context, f"[SLEUTH CANCEL] target={target_user.id} by={user_id} chat={chat_id}")
+        return
+
+    # РАР СЛЕЖКИ
+    if clean in ["рар слежки", "rar слежки", "рар, слежки", "rar, слежки", "рар следки", "rar следки"]:
+        if chat_id >= 0:
+            await update.message.reply_text("Только в группах"); return
+        if not await check_user_rank(update, context, chat_id, user_id, RANK_MID):
+            return
+        rows = sleuth_get_all(chat_id)
+        if not rows:
+            await update.message.reply_text("Активных слежек нет"); return
+        lines = ["Активные слежки:"]
+        for r in rows:
+            sid, tid, tname, aid, aname, req, cur, dur, action, deadline = r
+            left = deadline.timestamp() - time.time() if deadline else 0
+            left_str = format_duration(int(max(0, left)))
+            t_display = f"@{tname}" if tname else f"ID {tid}"
+            act_str = f" [{action}]" if action != "none" else ""
+            lines.append(f"{t_display} — {cur}/{req}{act_str}, осталось {left_str}")
+        await update.message.reply_text("\n".join(lines)); return
 
     admin_match = re.match(r"^(рар|rar)[,.]?\s+админ\b(?:\s+(\+\+|--|\+|-))?\s*(.*)$", text, re.IGNORECASE)
     if admin_match:
@@ -1567,7 +1742,10 @@ async def handle_message(update, context):
             "• <code>Рар топ плейлистов</code>\n\n<b>Игры:</b>\n"
             "• <code>Рар рулетка</code>\n"
             "• <code>Рар дуэль</code> / <code>Рар перестрелка</code>\n"
-            "• <code>Рар дуэль хард</code>\n\n<b>Админ-система:</b>\n"
+            "• <code>Рар дуэль хард</code>\n\n<b>Слежка:</b>\n"
+            "• <code>Рар слежка</code> @user [срок] [норма] [кик/бан]\n"
+            "• <code>Рар снять слежку</code> @user\n"
+            "• <code>Рар слежки</code>\n\n<b>Админ-система:</b>\n"
             "• <code>Рар админ</code> @user\n"
             "• <code>Рар админ +</code> @user (ст.)\n"
             "• <code>Рар админ ++</code> / <code>Рар админ -</code> / <code>Рар админ --</code>\n"
@@ -1966,6 +2144,45 @@ async def handle_my_chat_member(update, context):
     except Exception as e: print(f"[MY_CHAT_MEMBER FATAL] {e}")
 
 
+async def sleuth_deadline_loop(app):
+    await asyncio.sleep(90)
+    while True:
+        try:
+            rows = sleuth_get_expired()
+            for r in rows:
+                sid, chat_id, target_id, tname, admin_id, aname, req, cur, dur, action = r
+                sleuth_delete_by_id(sid)
+                t_display = f"@{tname}" if tname else f"ID {target_id}"
+                a_display = f"@{aname}" if aname else f"ID {admin_id}"
+                dur_str = format_duration(dur)
+                msg = f"Слежка завершена. {t_display} набрал {cur}/{req} за {dur_str}. Наблюдатель: {a_display}."
+                if action == "kick":
+                    try:
+                        await app.bot.ban_chat_member(chat_id, target_id)
+                        await app.bot.unban_chat_member(chat_id, target_id)
+                        msg += " Исключён."
+                    except Exception as e:
+                        msg += " Не смогла кикнуть (мало прав)."
+                        print(f"[SLEUTH KICK ERROR] {e}")
+                elif action == "ban":
+                    try:
+                        await app.bot.ban_chat_member(chat_id, target_id)
+                        msg += " Забанен."
+                    except Exception as e:
+                        msg += " Не смогла забанить (мало прав)."
+                        print(f"[SLEUTH BAN ERROR] {e}")
+                try: await app.bot.send_message(chat_id=chat_id, text=msg)
+                except Exception: pass
+                try:
+                    owner_id = get_owner_id()
+                    if owner_id:
+                        await app.bot.send_message(chat_id=owner_id, text=f"<b>LOG</b>\n<code>[SLEUTH END] {msg}</code>", parse_mode="HTML")
+                except Exception: pass
+        except Exception as e:
+            print(f"[SLEUTH LOOP ERROR] {e}")
+        await asyncio.sleep(60)
+
+
 async def daily_track_loop(app):
     await asyncio.sleep(60)
     while True:
@@ -2030,6 +2247,7 @@ async def on_startup(application):
     asyncio.create_task(keep_database_alive())
     asyncio.create_task(daily_track_loop(application))
     asyncio.create_task(rl_timeout_loop())
+    asyncio.create_task(sleuth_deadline_loop(application))
 
 
 def main():
