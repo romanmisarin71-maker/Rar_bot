@@ -22,36 +22,24 @@ STATUS_RESTRICTED = "restricted"
 STATUS_LEFT = "left"
 STATUS_KICKED = "kicked"
 STATUS_BANNED = "banned"
-
 ADMIN_STATUSES = {STATUS_ADMINISTRATOR, STATUS_CREATOR}
 IN_CHAT_STATUSES = {STATUS_MEMBER, STATUS_RESTRICTED, STATUS_ADMINISTRATOR, STATUS_CREATOR}
 LEAVE_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
 
-RANK_NONE = 0
-RANK_LOW = 1
-RANK_MID = 2
-RANK_SENIOR = 3
+RANK_NONE = 0; RANK_LOW = 1; RANK_MID = 2; RANK_SENIOR = 3
 RANK_NAMES = {0: "не админ", 1: "мл. админ", 2: "ср. админ", 3: "ст. админ"}
 
-IRIS_IDS = {5443619563, 5226378684, 707693258, 5434504334}
-
-battle_start_phrases = [
-    "Ну все, Ирис!!! Приготовься!!!",
-    "ИРИИИС!!! Сейчас будет жарко!!!",
-    "Готов получить пулю в лоб, Ирис!?!?",
-]
-battle_final_sounds = ["БДЫЩ", "БАХ", "ПАФ"]
-battle_win_phrases = [
-    "ПОПАЛА!!! ПОБЕДА ЗА МНОЙ!!!",
-    "ХААА!!! В ЯБЛОЧКО!!!",
-    "ЕСТЬ!!! ПРЯМОЕ ПОПАДАНИЕ!!!",
-]
-battle_state = {}
-
-# Рулетка
 roulette_games = {}
 ROULETTE_TIMEOUT = 300
 ROULETTE_ITEM_NAMES = {"lupa": "Лупа", "pila": "Пила", "naruch": "Наручники", "sigara": "Сигарета"}
+
+DUEL_START_PHRASES = ["Готов?", "На счет три.", "Не моргай."]
+DUEL_FINAL_SOUNDS = ["БДЫЩ", "БАХ", "ПАФ"]
+DUEL_PLAYER_WIN_PHRASES = ["Ты выиграл.", "Победа за тобой.", "Хорошая работа."]
+DUEL_RAR_WIN_PHRASES = ["Победа за мной.", "Ты не успел.", "Слишком медленно."]
+DUEL_TRIGGERS = {"пиу", "пау", "паф"}
+duel_games = {}
+DUEL_TIMEOUT = 120
 
 _creator_cache = {}
 CREATOR_CACHE_TTL = 3600
@@ -59,7 +47,6 @@ CREATOR_CACHE_TTL = 3600
 INLINE_SEEN_LIMIT = 100
 INLINE_SEEN_TTL = 300
 inline_seen = {}
-
 INLINE_RESULT_CACHE_TTL = 300
 inline_result_cache = {}
 
@@ -79,33 +66,17 @@ def get_db_connection():
 
 
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""CREATE TABLE IF NOT EXISTS channel_music (
-        file_id TEXT PRIMARY KEY, title TEXT NOT NULL,
-        added_by BIGINT, added_at TIMESTAMP DEFAULT NOW())""")
+    conn = get_db_connection(); cursor = conn.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS channel_music (file_id TEXT PRIMARY KEY, title TEXT NOT NULL, added_by BIGINT, added_at TIMESTAMP DEFAULT NOW())")
     cursor.execute("ALTER TABLE channel_music ADD COLUMN IF NOT EXISTS track_num SERIAL")
     cursor.execute("ALTER TABLE channel_music ADD COLUMN IF NOT EXISTS inline_broken BOOLEAN DEFAULT FALSE")
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_music_track_num ON channel_music(track_num)")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS track_stats (
-        track_num INTEGER PRIMARY KEY REFERENCES channel_music(track_num) ON DELETE CASCADE,
-        plays BIGINT DEFAULT 0, last_played TIMESTAMP DEFAULT NOW())""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS chat_settings (
-        chat_id BIGINT PRIMARY KEY, greet_enabled BOOLEAN DEFAULT TRUE,
-        farewell_enabled BOOLEAN DEFAULT TRUE,
-        greet_text TEXT DEFAULT 'Добро пожаловать в %чат%, %имя%',
-        farewell_text TEXT DEFAULT 'Пока пока, %имя%, буду скучать!')""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS chat_members (
-        chat_id BIGINT PRIMARY KEY, user_ids BIGINT[] DEFAULT '{}')""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS system_settings (
-        key TEXT PRIMARY KEY, value TEXT)""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS usernames (
-        user_id BIGINT PRIMARY KEY, username TEXT)""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS chat_admins (
-        chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
-        rank INTEGER NOT NULL, assigned_by BIGINT,
-        assigned_at TIMESTAMP DEFAULT NOW(),
-        PRIMARY KEY (chat_id, user_id))""")
+    cursor.execute("CREATE TABLE IF NOT EXISTS track_stats (track_num INTEGER PRIMARY KEY REFERENCES channel_music(track_num) ON DELETE CASCADE, plays BIGINT DEFAULT 0, last_played TIMESTAMP DEFAULT NOW())")
+    cursor.execute("CREATE TABLE IF NOT EXISTS chat_settings (chat_id BIGINT PRIMARY KEY, greet_enabled BOOLEAN DEFAULT TRUE, farewell_enabled BOOLEAN DEFAULT TRUE, greet_text TEXT DEFAULT 'Добро пожаловать в %чат%, %имя%', farewell_text TEXT DEFAULT 'Пока пока, %имя%, буду скучать!')")
+    cursor.execute("CREATE TABLE IF NOT EXISTS chat_members (chat_id BIGINT PRIMARY KEY, user_ids BIGINT[] DEFAULT '{}')")
+    cursor.execute("CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS usernames (user_id BIGINT PRIMARY KEY, username TEXT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS chat_admins (chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL, rank INTEGER NOT NULL, assigned_by BIGINT, assigned_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY (chat_id, user_id))")
     conn.commit(); cursor.close(); conn.close()
 
 
@@ -113,9 +84,7 @@ def save_username(user_id, username):
     if not username: return
     try:
         conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("""INSERT INTO usernames (user_id, username) VALUES (%s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username""",
-            (user_id, username.lower()))
+        cursor.execute("INSERT INTO usernames (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username", (user_id, username.lower()))
         conn.commit(); cursor.close(); conn.close()
     except Exception: pass
 
@@ -132,12 +101,9 @@ def find_user_by_username(username):
 async def resolve_target(update, context, chat_id, target_arg):
     if not target_arg: return None
     target_arg = target_arg.strip()
-    if target_arg.startswith("@"):
-        return find_user_by_username(target_arg)
-    try:
-        return int(target_arg)
-    except ValueError:
-        return None
+    if target_arg.startswith("@"): return find_user_by_username(target_arg)
+    try: return int(target_arg)
+    except ValueError: return None
 
 
 def get_admin_rank(chat_id, user_id):
@@ -146,8 +112,7 @@ def get_admin_rank(chat_id, user_id):
         cursor.execute("SELECT rank FROM chat_admins WHERE chat_id = %s AND user_id = %s", (chat_id, user_id))
         row = cursor.fetchone(); cursor.close(); conn.close()
         return row[0] if row else RANK_NONE
-    except Exception:
-        return RANK_NONE
+    except Exception: return RANK_NONE
 
 
 def set_admin_rank(chat_id, user_id, rank, by_user):
@@ -155,10 +120,7 @@ def set_admin_rank(chat_id, user_id, rank, by_user):
     if rank <= 0:
         cursor.execute("DELETE FROM chat_admins WHERE chat_id = %s AND user_id = %s", (chat_id, user_id))
     else:
-        cursor.execute("""INSERT INTO chat_admins (chat_id, user_id, rank, assigned_by, assigned_at)
-            VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (chat_id, user_id) DO UPDATE SET rank = EXCLUDED.rank,
-            assigned_by = EXCLUDED.assigned_by, assigned_at = NOW()""", (chat_id, user_id, rank, by_user))
+        cursor.execute("INSERT INTO chat_admins (chat_id, user_id, rank, assigned_by, assigned_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (chat_id, user_id) DO UPDATE SET rank = EXCLUDED.rank, assigned_by = EXCLUDED.assigned_by, assigned_at = NOW()", (chat_id, user_id, rank, by_user))
     conn.commit(); cursor.close(); conn.close()
 
 
@@ -172,61 +134,103 @@ async def get_chat_creator(chat_id, context):
     now = time.time()
     if chat_id in _creator_cache:
         cid, ts = _creator_cache[chat_id]
-        if now - ts < CREATOR_CACHE_TTL:
-            return cid
+        if now - ts < CREATOR_CACHE_TTL: return cid
     try:
         admins = await context.bot.get_chat_administrators(chat_id)
         for a in admins:
             if a.status == STATUS_CREATOR:
-                _creator_cache[chat_id] = (a.user.id, now)
-                return a.user.id
-    except Exception:
-        pass
+                _creator_cache[chat_id] = (a.user.id, now); return a.user.id
+    except Exception: pass
     return None
 
 
 async def check_user_rank(update, context, chat_id, user_id, required_rank):
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах")
-        return False
+    if chat_id >= 0 and required_rank > RANK_NONE:
+        await update.message.reply_text("Эта команда работает только в группах"); return False
+    if chat_id >= 0: return True
     creator = await get_chat_creator(chat_id, context)
-    if creator and user_id == creator:
-        return True
+    if creator and user_id == creator: return True
     rank = get_admin_rank(chat_id, user_id)
     if rank < required_rank:
-        await update.message.reply_text("Не дорос еще! Недостаточно прав!!!")
-        return False
+        await update.message.reply_text("Не дорос еще! Недостаточно прав!!!"); return False
     return True
 
 
-async def iris_battle(update, context, chat_id, count):
-    start_phrase = random.choice(battle_start_phrases)
-    await context.bot.send_message(chat_id=chat_id, text=f"<b>{start_phrase}</b>", parse_mode="HTML")
-    await asyncio.sleep(5)
-    battle_state[chat_id] = {"active": True, "last_iris_reply": time.time()}
-    for i in range(count):
-        await context.bot.send_message(chat_id=chat_id, text="<b>ПИУ</b>", parse_mode="HTML")
-        wait_start = time.time()
-        answered = False
-        while time.time() - wait_start < 6:
-            st = battle_state.get(chat_id, {})
-            if st.get("last_iris_reply", 0) > wait_start:
-                answered = True; break
-            await asyncio.sleep(0.5)
-        if not answered:
-            battle_state.pop(chat_id, None)
-            await context.bot.send_message(chat_id=chat_id, text="<b>Эммм...</b>", parse_mode="HTML")
-            return
-        await asyncio.sleep(1)
-    battle_state.pop(chat_id, None)
-    if random.randint(1, 10) == 10:
-        await context.bot.send_message(chat_id=chat_id, text="<b>ПШШШ... МИМО...</b>", parse_mode="HTML")
-        return
-    final_sound = random.choice(battle_final_sounds)
-    await context.bot.send_message(chat_id=chat_id, text=f"<b>{final_sound}</b>", parse_mode="HTML")
+# ==================== ДУЭЛЬ ====================
+
+async def duel_start(update, context, hard=False):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    gid = str(int(time.time() * 1000))
+    rounds = 10 if hard else 5
+    timeout = 3 if hard else 4
+    game = {
+        "gid": gid, "chat_id": chat_id, "user_id": user_id,
+        "round": 0, "max_rounds": rounds, "timeout": timeout,
+        "active": True, "state": "intro",
+        "last_action": time.time(), "hard": hard, "msg_id": None,
+    }
+    duel_games[gid] = game
+    start_phrase = random.choice(DUEL_START_PHRASES)
+    msg = await update.message.reply_text(f"– {start_phrase}", parse_mode="HTML")
+    game["msg_id"] = msg.message_id
+    await asyncio.sleep(2)
+    asyncio.create_task(duel_rar_turn(context, game))
+
+
+async def duel_rar_turn(context, game):
+    if not game.get("active"): return
     await asyncio.sleep(1)
-    win_phrase = random.choice(battle_win_phrases)
-    await context.bot.send_message(chat_id=chat_id, text=f"<b>{win_phrase}</b>", parse_mode="HTML")
+    game["round"] += 1
+    game["last_action"] = time.time()
+    if game["round"] > game["max_rounds"]:
+        game["active"] = False
+        duel_games.pop(game["gid"], None)
+        try:
+            await context.bot.edit_message_text(
+                chat_id=game["chat_id"], message_id=game["msg_id"],
+                text=f"– {random.choice(DUEL_PLAYER_WIN_PHRASES)}", parse_mode="HTML")
+        except Exception: pass
+        return
+    game["state"] = "waiting_player"
+    game["deadline"] = time.time() + game["timeout"]
+    try:
+        await context.bot.edit_message_text(
+            chat_id=game["chat_id"], message_id=game["msg_id"],
+            text=f"<b>ПИУ</b>\n\nРаунд {game['round']}/{game['max_rounds']}",
+            parse_mode="HTML")
+    except Exception: pass
+    asyncio.create_task(duel_timer(context, game, game["round"]))
+
+
+async def duel_timer(context, game, round_num):
+    await asyncio.sleep(game["timeout"] + 0.3)
+    if not game.get("active"): return
+    if game.get("round") != round_num: return
+    if game.get("state") != "waiting_player": return
+    game["active"] = False
+    duel_games.pop(game["gid"], None)
+    final_sound = random.choice(DUEL_FINAL_SOUNDS)
+    try:
+        await context.bot.edit_message_text(
+            chat_id=game["chat_id"], message_id=game["msg_id"],
+            text=f"<b>{final_sound}</b>\n\n– {random.choice(DUEL_RAR_WIN_PHRASES)}",
+            parse_mode="HTML")
+    except Exception: pass
+
+
+def duel_handle_reply(chat_id, user_id, text):
+    txt = text.strip().lower()
+    if txt not in DUEL_TRIGGERS: return False
+    for gid, game in list(duel_games.items()):
+        if game["chat_id"] != chat_id: continue
+        if game["user_id"] != user_id: continue
+        if not game.get("active"): continue
+        if game.get("state") != "waiting_player": continue
+        game["state"] = "answered"
+        game["last_action"] = time.time()
+        return True
+    return False
 
 
 # ==================== РУЛЕТКА ====================
@@ -258,135 +262,129 @@ def rl_items_text(items):
 def rl_render(game):
     hp_p = rl_hp_bar(game["player_hp"], game["player_max_hp"])
     hp_r = rl_hp_bar(game["rar_hp"], game["rar_max_hp"])
-    lines = []
-    lines.append(f"<b>РАУНД {game['round']}</b>")
-    lines.append("")
+    lines = [f"<b>РАУНД {game['round']}</b>", ""]
     lines.append(f"Rar: {hp_r}    Ты: {hp_p}")
     lines.append("")
     lines.append(f"В обойме: {len(game['magazine']) - game['shot_idx']}")
-    lines.append(f"Твои предметы: {rl_items_text(game['player_items'])}")
-    lines.append(f"Предметы Rar: {rl_items_text(game['rar_items'])}")
+    if game["round"] == 2:
+        lines.append(f"Твои предметы: {rl_items_text(game['player_items'])}")
+        lines.append(f"Предметы Rar: {rl_items_text(game['rar_items'])}")
     lines.append("")
     if game.get("log"):
         lines.append(game["log"])
         lines.append("")
-    lines.append(game.get("status", "Твой ход."))
+    status = game.get("status", "")
+    if status:
+        lines.append(f"<i>{status}</i>")
     return "\n".join(lines)
 
 
-def rl_keyboard(game, player_id):
+def rl_keyboard(game):
     rows = []
-    if game["turn"] == "player":
+    if game["turn"] == "player" and not game.get("finished"):
         rows.append([
             InlineKeyboardButton("Выстрел в себя", callback_data=f"rl_shoot_self_{game['gid']}"),
             InlineKeyboardButton("Выстрел в Rar", callback_data=f"rl_shoot_rar_{game['gid']}"),
         ])
-        item_buttons = []
-        for it in game["player_items"]:
-            item_buttons.append(InlineKeyboardButton(ROULETTE_ITEM_NAMES[it], callback_data=f"rl_item_{it}_{game['gid']}"))
-        if item_buttons:
+        if game["round"] == 2 and game["player_items"]:
+            item_buttons = [InlineKeyboardButton(ROULETTE_ITEM_NAMES[it], callback_data=f"rl_item_{it}_{game['gid']}") for it in game["player_items"]]
             rows.append(item_buttons)
-    else:
-        rows.append([InlineKeyboardButton("Ход Rar...", callback_data=f"rl_noop_{game['gid']}")])
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 async def rl_edit(context, game):
     try:
         await context.bot.edit_message_text(
-            chat_id=game["chat_id"],
-            message_id=game["msg_id"],
-            text=rl_render(game),
-            parse_mode="HTML",
-            reply_markup=rl_keyboard(game, game["player_id"])
-        )
+            chat_id=game["chat_id"], message_id=game["msg_id"],
+            text=rl_render(game), parse_mode="HTML",
+            reply_markup=rl_keyboard(game))
     except Exception as e:
         print(f"[RL EDIT ERROR] {e}")
 
 
 async def rl_finish(context, game, winner):
     game["finished"] = True
+    game["turn"] = "finished"
     if winner == "player":
-        game["status"] = "Победа за тобой. Наслаждайся."
+        game["status"] = "Победа за тобой."
     else:
-        game["status"] = "Победа. В следующий раз повезёт больше."
+        game["status"] = "Победа за мной."
     game["log"] = ""
     try:
-        await context.bot.edit_message_text(
-            chat_id=game["chat_id"], message_id=game["msg_id"],
+        await context.bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"],
             text=rl_render(game), parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Закрыть", callback_data=f"rl_close_{game['gid']}")]])
-        )
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Закрыть", callback_data=f"rl_close_{game['gid']}")]]))
     except Exception: pass
     if winner == "player" and game["round"] == 1:
         try:
-            await context.bot.send_message(
-                chat_id=game["chat_id"],
-                text="Ты прошёл первый раунд. Второй — с предметами. Сыграем?",
+            await context.bot.send_message(chat_id=game["chat_id"],
+                text="Первый раунд за тобой. Второй — с предметами.",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("Да, второй раунд", callback_data=f"rl_r2_{game['gid']}"),
-                    InlineKeyboardButton("Нет", callback_data=f"rl_close_{game['gid']}")
-                ]])
-            )
+                    InlineKeyboardButton("2 Раунд", callback_data=f"rl_r2_{game['gid']}"),
+                    InlineKeyboardButton('"Нет"', callback_data=f"rl_close_{game['gid']}")
+                ]]))
         except Exception: pass
     roulette_games.pop(game["gid"], None)
 
 
-async def rl_rar_turn(context, game):
-    await asyncio.sleep(2)
-    game["turn"] = "rar"
-    game["log"] = "Ход Rar."
+async def rl_reload(context, game):
+    count = random.randint(3, 8)
+    mag, bullets, blanks = rl_make_magazine(count)
+    game["magazine"] = mag
+    game["shot_idx"] = 0
+    game["log"] = f"<b>Rar перезаряжает ружьё.</b>\n– {blanks} холостых, {bullets} боевых"
     await rl_edit(context, game)
     await asyncio.sleep(2)
 
-    # Rar uses items
-    if game["rar_items"]:
-        # Lupa: if doesn't know current shot
+
+async def rl_rar_turn(context, game):
+    if game.get("finished"): return
+    await asyncio.sleep(2)
+    game["turn"] = "rar"
+    game["log"] = "– Ход мой."
+    game["status"] = "Ход Rar"
+    await rl_edit(context, game)
+    await asyncio.sleep(2)
+
+    if game["round"] == 2 and game["rar_items"]:
         if "lupa" in game["rar_items"] and not game.get("rar_knows"):
             game["rar_items"].remove("lupa")
             game["rar_knows"] = game["magazine"][game["shot_idx"]]
-            game["log"] = "Rar использует лупу."
-            await rl_edit(context, game)
-            await asyncio.sleep(2)
-        # Sigara: if hp low
+            game["log"] = "– Смотрю в ствол."
+            game["status"] = "Ход Rar"
+            await rl_edit(context, game); await asyncio.sleep(2)
         if "sigara" in game["rar_items"] and game["rar_hp"] < game["rar_max_hp"]:
             game["rar_items"].remove("sigara")
             game["rar_hp"] += 1
-            game["log"] = "Rar курит. +1 HP."
-            await rl_edit(context, game)
-            await asyncio.sleep(2)
-        # Pila: if knows bullet
+            game["log"] = "– Затянусь."
+            game["status"] = "Ход Rar"
+            await rl_edit(context, game); await asyncio.sleep(2)
         if "pila" in game["rar_items"] and game.get("rar_knows") == "B":
             game["rar_items"].remove("pila")
             game["pila_active"] = True
-            game["log"] = "Rar срезает ствол."
-            await rl_edit(context, game)
-            await asyncio.sleep(2)
-        # Naruch: if knows blank
+            game["log"] = "– Срезаю ствол."
+            game["status"] = "Ход Rar"
+            await rl_edit(context, game); await asyncio.sleep(2)
         if "naruch" in game["rar_items"] and game.get("rar_knows") == "H":
             game["rar_items"].remove("naruch")
             game["player_skip"] = True
-            game["log"] = "Rar надевает наручники. Твой следующий ход пропущен."
-            await rl_edit(context, game)
-            await asyncio.sleep(2)
+            game["log"] = "– Наручники."
+            game["status"] = "Ход Rar"
+            await rl_edit(context, game); await asyncio.sleep(2)
 
-    # Decide target
     knows = game.get("rar_knows")
-    if knows == "B":
-        target = "player"
-    elif knows == "H":
-        target = "rar"
-    else:
-        target = random.choice(["player", "rar"])
+    if knows == "B": target = "player"
+    elif knows == "H": target = "rar"
+    else: target = "player" if random.randint(1, 100) <= 60 else "rar"
 
     if target == "player":
-        game["log"] = "Rar стреляет в тебя."
+        game["log"] = "– Стреляю в тебя."
     else:
-        game["log"] = "Rar стреляет в себя."
+        game["log"] = "– Стреляю в себя."
+    game["status"] = "Ход Rar"
     await rl_edit(context, game)
     await asyncio.sleep(2)
 
-    # Apply shot
     shot = game["magazine"][game["shot_idx"]]
     game["shot_idx"] += 1
     dmg = 2 if game.get("pila_active") else 1
@@ -394,112 +392,89 @@ async def rl_rar_turn(context, game):
     game["rar_knows"] = None
 
     if shot == "B":
-        if target == "player":
-            game["player_hp"] -= dmg
-            game["log"] = "Попадание."
-        else:
-            game["rar_hp"] -= dmg
-            game["log"] = "Попадание."
+        if target == "player": game["player_hp"] -= dmg
+        else: game["rar_hp"] -= dmg
+        game["log"] = "<b>Попадание.</b>"
     else:
-        game["log"] = "Щелчок. Пусто."
+        game["log"] = "<b>Щелчок. Пусто.</b>"
 
-    if game["player_hp"] <= 0:
-        await rl_finish(context, game, "rar"); return
-    if game["rar_hp"] <= 0:
-        await rl_finish(context, game, "player"); return
+    if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
+    if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
 
-    await rl_edit(context, game)
-    await asyncio.sleep(2)
+    game["status"] = "Ход Rar"
+    await rl_edit(context, game); await asyncio.sleep(2)
 
-    # Reload if empty
     if game["shot_idx"] >= len(game["magazine"]):
-        count = random.randint(3, 8)
-        game["magazine"], bullets, blanks = rl_make_magazine(count)
-        game["shot_idx"] = 0
-        game["log"] = f"Rar перезаряжает. В обойме: {count}."
-        await rl_edit(context, game)
-        await asyncio.sleep(2)
+        await rl_reload(context, game)
 
-    # Blank shot in self = extra turn
     if shot == "H" and target == "rar":
-        # Rar goes again
-        await rl_rar_turn(context, game)
-        return
+        asyncio.create_task(rl_rar_turn(context, game)); return
 
-    # Player turn (unless skipped)
     if game.get("player_skip"):
         game["player_skip"] = False
-        game["log"] = "Твой ход пропущен. Ход Rar."
-        await rl_edit(context, game)
-        await asyncio.sleep(2)
-        await rl_rar_turn(context, game)
-        return
+        game["log"] = "– Твой ход пропущен."
+        game["status"] = "Ход Rar"
+        await rl_edit(context, game); await asyncio.sleep(2)
+        asyncio.create_task(rl_rar_turn(context, game)); return
 
     game["turn"] = "player"
     game["log"] = ""
-    if game["player_hp"] == 1:
-        game["status"] = "Сейчас осторожнее. Твой ход."
-    else:
-        game["status"] = "Твой ход."
+    game["status"] = "Твой ход"
+    if game["player_hp"] == 1 and game["rar_hp"] == 1:
+        game["log"] = "– Сейчас осторожнее."
+    elif game["rar_hp"] == 1:
+        game["log"] = "– Гх..."
     await rl_edit(context, game)
 
 
 async def rl_start(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    if chat_id >= 0:
-        await update.message.reply_text("Эта команда работает только в группах"); return
     gid = str(int(time.time() * 1000))
     count = random.randint(3, 8)
     mag, bullets, blanks = rl_make_magazine(count)
     game = {
         "gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None,
         "round": 1, "player_hp": 2, "rar_hp": 2, "player_max_hp": 2, "rar_max_hp": 2,
-        "magazine": mag, "shot_idx": 0,
-        "player_items": [], "rar_items": [],
-        "turn": "player", "log": f"1 холостой, {bullets} боевых. Твой ход.",
-        "status": "Твой ход.", "finished": False, "last_action": time.time(),
+        "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [],
+        "turn": "player", "log": "", "status": "Твой ход",
+        "finished": False, "last_action": time.time(),
     }
     msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
     game["msg_id"] = msg.message_id
-    await msg.edit_reply_markup(reply_markup=rl_keyboard(game, user_id))
+    game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
+    await rl_edit(context, game)
     roulette_games[gid] = game
 
 
-async def rl_round2_start(update, context, gid, chat_id):
+async def rl_round2_start(context, gid, chat_id):
     old = roulette_games.get(gid)
     if not old: return
     player_id = old["player_id"]
+    old_msg_id = old["msg_id"]
     count = random.randint(3, 8)
     mag, bullets, blanks = rl_make_magazine(count)
     game = {
-        "gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": old["msg_id"],
+        "gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": old_msg_id,
         "round": 2, "player_hp": 4, "rar_hp": 4, "player_max_hp": 4, "rar_max_hp": 4,
         "magazine": mag, "shot_idx": 0,
         "player_items": rl_generate_items(2), "rar_items": rl_generate_items(2),
-        "turn": "player", "log": "", "status": "", "finished": False,
-        "last_action": time.time(),
+        "turn": "player", "log": "", "status": "Раздача предметов...",
+        "finished": False, "last_action": time.time(),
     }
     roulette_games[gid] = game
-    # Animation of dealing items
-    game["log"] = "Да будет нам мила Госпожа Удача."
-    game["status"] = "Раздача предметов..."
-    await rl_edit(context, game)
-    await asyncio.sleep(1)
+    game["log"] = "– Да будет нам мила Госпожа Удача."
+    await rl_edit(context, game); await asyncio.sleep(1)
     game["log"] = f"Ты получаешь: {ROULETTE_ITEM_NAMES[game['player_items'][0]]}"
-    await rl_edit(context, game)
-    await asyncio.sleep(1)
+    await rl_edit(context, game); await asyncio.sleep(1)
     game["log"] = f"Ты получаешь: {ROULETTE_ITEM_NAMES[game['player_items'][1]]}"
-    await rl_edit(context, game)
-    await asyncio.sleep(1)
+    await rl_edit(context, game); await asyncio.sleep(1)
     game["log"] = f"Rar получает: {ROULETTE_ITEM_NAMES[game['rar_items'][0]]}"
-    await rl_edit(context, game)
-    await asyncio.sleep(1)
+    await rl_edit(context, game); await asyncio.sleep(1)
     game["log"] = f"Rar получает: {ROULETTE_ITEM_NAMES[game['rar_items'][1]]}"
-    await rl_edit(context, game)
-    await asyncio.sleep(1)
-    game["log"] = f"1 холостой, {bullets} боевых. Твой ход."
-    game["status"] = "Твой ход."
+    await rl_edit(context, game); await asyncio.sleep(1)
+    game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
+    game["status"] = "Твой ход"
     await rl_edit(context, game)
 
 
@@ -510,8 +485,7 @@ async def rl_callback(update, context):
     data = q.data
     user_id = q.from_user.id
 
-    if data.startswith("rl_noop_"):
-        return
+    if data.startswith("rl_noop_"): return
     if data.startswith("rl_close_"):
         gid = data.split("_")[-1]
         roulette_games.pop(gid, None)
@@ -520,16 +494,20 @@ async def rl_callback(update, context):
         return
     if data.startswith("rl_r2_"):
         gid = data.split("_")[-1]
-        await rl_round2_start(update, context, gid, q.message.chat_id)
         try: await q.message.delete()
         except Exception: pass
+        old = roulette_games.get(gid)
+        if old:
+            try: await context.bot.delete_message(chat_id=old["chat_id"], message_id=old["msg_id"])
+            except Exception: pass
+        await rl_round2_start(context, gid, q.message.chat_id)
         return
 
     parts = data.split("_")
     if len(parts) < 3: return
+
     if parts[1] == "shoot":
-        gid = parts[-1]
-        target = parts[2]  # "self" or "rar"
+        gid = parts[-1]; target = parts[2]
         game = roulette_games.get(gid)
         if not game or game["finished"]: return
         if game["player_id"] != user_id:
@@ -537,6 +515,8 @@ async def rl_callback(update, context):
             except Exception: pass
             return
         if game["turn"] != "player": return
+        try: await q.edit_message_reply_markup(reply_markup=None)
+        except Exception: pass
 
         shot = game["magazine"][game["shot_idx"]]
         game["shot_idx"] += 1
@@ -545,69 +525,60 @@ async def rl_callback(update, context):
 
         if target == "self":
             if shot == "B":
-                game["player_hp"] -= dmg
-                game["log"] = "Попадание в себя."
-            else:
-                game["log"] = "Щелчок. Пусто."
+                game["player_hp"] -= dmg; game["log"] = "<b>Попадание.</b>"
+            else: game["log"] = "<b>Щелчок. Пусто.</b>"
         else:
             if shot == "B":
-                game["rar_hp"] -= dmg
-                game["log"] = "Попадание в Rar."
-            else:
-                game["log"] = "Щелчок. Пусто."
+                game["rar_hp"] -= dmg; game["log"] = "<b>Попадание.</b>"
+            else: game["log"] = "<b>Щелчок. Пусто.</b>"
 
-        if game["player_hp"] <= 0:
-            await rl_finish(context, game, "rar"); return
-        if game["rar_hp"] <= 0:
-            await rl_finish(context, game, "player"); return
+        if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
+        if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
 
-        # Reload
         if game["shot_idx"] >= len(game["magazine"]):
-            count = random.randint(3, 8)
-            game["magazine"], bullets, blanks = rl_make_magazine(count)
-            game["shot_idx"] = 0
-            game["log"] += f" Rar перезаряжает: 1 холостой, {bullets} боевых."
-
-        # Blank self = extra turn
-        if shot == "H" and target == "self":
-            game["status"] = "Твой ход снова."
+            game["status"] = "Перезарядка"
             await rl_edit(context, game)
-            return
+            await asyncio.sleep(2)
+            await rl_reload(context, game)
 
-        game["status"] = "Ход Rar."
+        if shot == "H" and target == "self":
+            game["status"] = "Твой ход снова"
+            await rl_edit(context, game); return
+
+        game["status"] = "Ход Rar"
         await rl_edit(context, game)
         asyncio.create_task(rl_rar_turn(context, game))
         return
 
     if parts[1] == "item":
-        gid = parts[-1]
-        item = parts[2]
+        gid = parts[-1]; item = parts[2]
         game = roulette_games.get(gid)
         if not game or game["finished"]: return
         if game["player_id"] != user_id: return
         if game["turn"] != "player": return
+        if game["round"] != 2: return
         if item not in game["player_items"]: return
+        try: await q.edit_message_reply_markup(reply_markup=None)
+        except Exception: pass
 
         if item == "lupa":
             game["player_items"].remove("lupa")
             game["player_knows"] = game["magazine"][game["shot_idx"]]
             label = "боевой" if game["player_knows"] == "B" else "холостой"
-            game["log"] = f"Следующий патрон: {label}."
+            game["log"] = f"– Следующий: {label}."
         elif item == "pila":
             game["player_items"].remove("pila")
             game["pila_active"] = True
-            game["log"] = "Ствол срезан. Следующий выстрел x2."
+            game["log"] = "– Ствол срезан. x2."
         elif item == "naruch":
             game["player_items"].remove("naruch")
             game["rar_skip"] = True
-            game["log"] = "Наручники на Rar."
+            game["log"] = "– Наручники на Rar."
         elif item == "sigara":
             game["player_items"].remove("sigara")
             if game["player_hp"] < game["player_max_hp"]:
-                game["player_hp"] += 1
-                game["log"] = "Сигарета. +1 HP."
-            else:
-                game["log"] = "HP уже максимальное."
+                game["player_hp"] += 1; game["log"] = "– +1 HP."
+            else: game["log"] = "– Уже максимум."
         await rl_edit(context, game)
         return
 
@@ -617,12 +588,13 @@ async def rl_timeout_loop():
     while True:
         try:
             now = time.time()
-            to_del = []
             for gid, game in list(roulette_games.items()):
                 if now - game["last_action"] > ROULETTE_TIMEOUT:
-                    to_del.append(gid)
-            for gid in to_del:
-                roulette_games.pop(gid, None)
+                    roulette_games.pop(gid, None)
+            for gid, game in list(duel_games.items()):
+                if now - game.get("last_action", 0) > DUEL_TIMEOUT:
+                    game["active"] = False
+                    duel_games.pop(gid, None)
         except Exception: pass
         await asyncio.sleep(30)
 
@@ -657,10 +629,8 @@ def search_tracks_in_db(query, limit=20):
 
 def get_all_tracks_from_db(only_ok=False):
     conn = get_db_connection(); cursor = conn.cursor()
-    if only_ok:
-        cursor.execute("SELECT file_id, title FROM channel_music WHERE inline_broken = FALSE")
-    else:
-        cursor.execute("SELECT file_id, title FROM channel_music")
+    if only_ok: cursor.execute("SELECT file_id, title FROM channel_music WHERE inline_broken = FALSE")
+    else: cursor.execute("SELECT file_id, title FROM channel_music")
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
@@ -669,8 +639,7 @@ def mark_track_broken(file_id):
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("UPDATE channel_music SET inline_broken = TRUE WHERE file_id = %s", (file_id,))
         conn.commit(); cursor.close(); conn.close()
-    except Exception as e:
-        print(f"[MARK BROKEN ERROR] {e}")
+    except Exception as e: print(f"[MARK BROKEN ERROR] {e}")
 
 
 def get_broken_tracks():
@@ -720,18 +689,14 @@ def increment_play(file_id):
         tn = get_track_num(file_id)
         if not tn: return
         conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("""INSERT INTO track_stats (track_num, plays, last_played) VALUES (%s, 1, NOW())
-            ON CONFLICT (track_num) DO UPDATE SET plays = track_stats.plays + 1, last_played = NOW()""", (tn,))
+        cursor.execute("INSERT INTO track_stats (track_num, plays, last_played) VALUES (%s, 1, NOW()) ON CONFLICT (track_num) DO UPDATE SET plays = track_stats.plays + 1, last_played = NOW()", (tn,))
         conn.commit(); cursor.close(); conn.close()
-    except Exception as e:
-        print(f"[INCREMENT PLAY ERROR] {e}")
+    except Exception as e: print(f"[INCREMENT PLAY ERROR] {e}")
 
 
 def get_top_tracks(limit=10):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("""SELECT cm.title, ts.plays FROM track_stats ts
-        JOIN channel_music cm ON cm.track_num = ts.track_num
-        WHERE ts.plays > 0 ORDER BY ts.plays DESC LIMIT %s""", (limit,))
+    cursor.execute("SELECT cm.title, ts.plays FROM track_stats ts JOIN channel_music cm ON cm.track_num = ts.track_num WHERE ts.plays > 0 ORDER BY ts.plays DESC LIMIT %s", (limit,))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
@@ -808,19 +773,14 @@ def remove_track_from_playlist(pid, track_num):
 def increment_playlist_search(pid):
     try:
         conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("""INSERT INTO playlist_stats (playlist_id, searches, last_searched)
-            VALUES (%s, 1, NOW()) ON CONFLICT (playlist_id) DO UPDATE SET
-            searches = playlist_stats.searches + 1, last_searched = NOW()""", (pid,))
+        cursor.execute("INSERT INTO playlist_stats (playlist_id, searches, last_searched) VALUES (%s, 1, NOW()) ON CONFLICT (playlist_id) DO UPDATE SET searches = playlist_stats.searches + 1, last_searched = NOW()", (pid,))
         conn.commit(); cursor.close(); conn.close()
-    except Exception as e:
-        print(f"[PLAYLIST SEARCH ERROR] {e}")
+    except Exception as e: print(f"[PLAYLIST SEARCH ERROR] {e}")
 
 
 def get_top_playlists(limit=10):
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("""SELECT p.name, ps.searches FROM playlist_stats ps
-        JOIN playlists p ON p.playlist_id = ps.playlist_id
-        WHERE ps.searches > 0 ORDER BY ps.searches DESC LIMIT %s""", (limit,))
+    cursor.execute("SELECT p.name, ps.searches FROM playlist_stats ps JOIN playlists p ON p.playlist_id = ps.playlist_id WHERE ps.searches > 0 ORDER BY ps.searches DESC LIMIT %s", (limit,))
     rows = cursor.fetchall(); cursor.close(); conn.close(); return rows
 
 
@@ -836,8 +796,7 @@ def get_random_playlist_with_tracks(user_id):
     if not all_pls:
         recent_playlists[user_id] = seen; return None
     available = [p for p in all_pls if p[0] not in seen]
-    if not available:
-        seen = {}; available = all_pls
+    if not available: seen = {}; available = all_pls
     chosen = random.choice(available)
     seen[chosen[0]] = now
     recent_playlists[user_id] = seen
@@ -862,9 +821,7 @@ def update_chat_setting(chat_id, field, value):
 def save_user_to_chat(user_id, chat_id):
     if user_id == GROUP_ANON_BOT_ID: return
     conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("""INSERT INTO chat_members (chat_id, user_ids) VALUES (%s, ARRAY[%s::BIGINT])
-        ON CONFLICT (chat_id) DO UPDATE SET user_ids = (
-        SELECT ARRAY(SELECT DISTINCT unnest(chat_members.user_ids || EXCLUDED.user_ids)))""", (chat_id, user_id))
+    cursor.execute("INSERT INTO chat_members (chat_id, user_ids) VALUES (%s, ARRAY[%s::BIGINT]) ON CONFLICT (chat_id) DO UPDATE SET user_ids = (SELECT ARRAY(SELECT DISTINCT unnest(chat_members.user_ids || EXCLUDED.user_ids)))", (chat_id, user_id))
     conn.commit(); cursor.close(); conn.close()
 
 
@@ -927,8 +884,7 @@ def substitute_vars(text, user_name, chat_title):
 
 
 def clean_title(full_title):
-    if " - " in full_title:
-        return full_title.split(" - ", 1)[1].strip()
+    if " - " in full_title: return full_title.split(" - ", 1)[1].strip()
     return full_title.strip()
 
 
@@ -958,16 +914,14 @@ async def log_to_owner(context, text):
         if owner_id:
             safe = text.replace("<", "&lt;").replace(">", "&gt;")
             if len(safe) > 3500: safe = safe[:3500] + "...[обрезано]"
-            await context.bot.send_message(chat_id=owner_id, text=f"🔔 <b>LOG</b>\n<code>{safe}</code>", parse_mode="HTML")
-    except Exception as e:
-        print(f"[LOG ERROR] {e}")
+            await context.bot.send_message(chat_id=owner_id, text=f"<b>LOG</b>\n<code>{safe}</code>", parse_mode="HTML")
+    except Exception as e: print(f"[LOG ERROR] {e}")
 
 
 async def notify_moderation(context, text):
     try:
         await context.bot.send_message(chat_id=MODERATION_CHAT_ID, text=text, parse_mode="HTML")
-    except Exception as e:
-        print(f"[MODERATION NOTIFY ERROR] {e}")
+    except Exception as e: print(f"[MODERATION NOTIFY ERROR] {e}")
 
 
 async def safe_answer_inline(update, context, results, cache_time=0):
@@ -1025,8 +979,7 @@ def pick_random_with_antirepeat(user_id, limit):
     if not all_tracks:
         inline_seen[user_id] = seen; return []
     available = [t for t in all_tracks if t[0] not in seen]
-    if len(available) < limit:
-        seen = {}; available = all_tracks
+    if len(available) < limit: seen = {}; available = all_tracks
     random.shuffle(available)
     chosen = available[:limit]
     for fid, _ in chosen: seen[fid] = now
@@ -1214,49 +1167,36 @@ async def handle_message(update, context):
     username = update.effective_user.username
     save_username(user_id, username)
     owner_id = get_owner_id()
-
-    if update.effective_user.id in IRIS_IDS:
-        txt = (update.message.text or "").strip().upper()
-        if txt == "ПАУ":
-            st = battle_state.get(chat_id)
-            if st and st.get("active"):
-                st["last_iris_reply"] = time.time()
-
-    if chat_id < 0 and not is_user_cached(user_id, chat_id):
-        try: save_user_to_chat(user_id, chat_id); cache_user(user_id, chat_id)
-        except Exception: pass
     incoming = ""
     if update.message.text: incoming = update.message.text.lower().strip()
     elif update.message.caption: incoming = update.message.caption.lower().strip()
     text = update.message.text or ""
 
-    # РУЛЕТКА
+    # Дуэль: ответы игрока
+    if incoming in DUEL_TRIGGERS:
+        handled = False
+        for gid, game in list(duel_games.items()):
+            if game["chat_id"] != chat_id or game["user_id"] != user_id: continue
+            if not game.get("active"): continue
+            if game.get("state") != "waiting_player": continue
+            game["state"] = "answered"
+            game["last_action"] = time.time()
+            asyncio.create_task(duel_rar_turn(context, game))
+            handled = True
+            break
+        if handled: return
+
+    # Рулетка
     rl_match = re.match(r"^(рар|rar)[,.]?\s+рулетка\s*$", text, re.IGNORECASE)
     if rl_match:
         await rl_start(update, context)
         return
 
-    battle_match = re.match(r"^(рар|rar)[,.]?\s+перестрелка(?:\s+(\d+))?\s*$", text, re.IGNORECASE)
-    if battle_match:
-        if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
-        if not await check_user_rank(update, context, chat_id, user_id, RANK_LOW):
-            return
-        found_iris = False
-        for iris_id in IRIS_IDS:
-            try:
-                m = await context.bot.get_chat_member(chat_id, iris_id)
-                if m.status in IN_CHAT_STATUSES:
-                    found_iris = True
-                    break
-            except Exception:
-                continue
-        if not found_iris:
-            await update.message.reply_text("Я не нашла мою цель..."); return
-        count = int(battle_match.group(2)) if battle_match.group(2) else 5
-        if count > 10: count = 10
-        if count < 1: count = 1
-        asyncio.create_task(iris_battle(update, context, chat_id, count))
+    # Дуэль
+    duel_match = re.match(r"^(рар|rar)[,.]?\s+(дуэль|перестрелка)(?:\s+(хард))?\s*$", text, re.IGNORECASE)
+    if duel_match:
+        hard = bool(duel_match.group(3))
+        await duel_start(update, context, hard=hard)
         return
 
     admin_match = re.match(r"^(рар|rar)[,.]?\s+админ\b(?:\s+(\+\+|--|\+|-))?\s*(.*)$", text, re.IGNORECASE)
@@ -1269,8 +1209,7 @@ async def handle_message(update, context):
             uid = await resolve_target(update, context, chat_id, target_arg)
             if uid:
                 try:
-                    m = await context.bot.get_chat_member(chat_id, uid)
-                    target_user = m.user
+                    m = await context.bot.get_chat_member(chat_id, uid); target_user = m.user
                 except Exception: target_user = None
         if not target_user:
             await update.message.reply_text("Ответь на сообщение или укажи @username."); return
@@ -1588,14 +1527,13 @@ async def handle_message(update, context):
             "• <code>Рар мои плейлисты</code>\n"
             "• <code>Рар дай плейлист</code>\n"
             "• <code>Рар найди плейлист</code> [название]\n"
-            "• <code>Рар топ плейлистов</code>\n\n<b>Админ-система:</b>\n"
-            "• <code>Рар перестрелка</code> [N] (мл.)\n"
-            "• <code>Рар рулетка</code> — игра\n"
-            "• <code>Рар админ</code> @user — показать ранг\n"
-            "• <code>Рар админ +</code> @user — назначить (ст.)\n"
-            "• <code>Рар админ ++</code> @user\n"
-            "• <code>Рар админ -</code> @user\n"
-            "• <code>Рар админ --</code> @user\n"
+            "• <code>Рар топ плейлистов</code>\n\n<b>Игры:</b>\n"
+            "• <code>Рар рулетка</code>\n"
+            "• <code>Рар дуэль</code> / <code>Рар перестрелка</code>\n"
+            "• <code>Рар дуэль хард</code>\n\n<b>Админ-система:</b>\n"
+            "• <code>Рар админ</code> @user\n"
+            "• <code>Рар админ +</code> @user (ст.)\n"
+            "• <code>Рар админ ++</code> / <code>Рар админ -</code> / <code>Рар админ --</code>\n"
             "• <code>Рар админы</code>\n"
             "• <code>Рар бан</code> @user [причина] (ст.)\n"
             "• <code>Рар разбан</code> @user (ст.)\n"
@@ -1677,8 +1615,7 @@ async def handle_message(update, context):
             await update.message.reply_text("Топ пуст!"); return
         lines = ["\nТоп 10 плейлистов\n"]
         for i, (name, searches) in enumerate(top, 1):
-            if i <= 3: lines.append(f"{i}. {name} ({searches})")
-            else: lines.append(f"{i}. {name} ({searches})")
+            lines.append(f"{i}. {name} ({searches})")
         await update.message.reply_text("\n".join(lines)); return
 
     del_from = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+?)\s+из\s+(?:плейлист[а]?\s+)?(.+)$", text, re.IGNORECASE)
