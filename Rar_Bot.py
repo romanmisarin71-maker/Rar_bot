@@ -1244,6 +1244,7 @@ async def handle_message(update, context):
     if update.message.text: incoming = update.message.text.lower().strip()
     elif update.message.caption: incoming = update.message.caption.lower().strip()
     text = update.message.text or ""
+    clean = text.lower().strip()
 
     # Учёт сообщений для слежки
     if chat_id < 0:
@@ -1393,7 +1394,7 @@ async def handle_message(update, context):
         return
 
     # РАР СЛЕЖКИ
-    if clean in ["рар слежки", "rar слежки", "рар, слежки", "rar, слежки", "рар следки", "rar следки"]:
+    if clean in ["рар слежки", "rar слежки", "рар, слежки", "rar, слежки"]:
         if chat_id >= 0:
             await update.message.reply_text("Только в группах"); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_MID):
@@ -1722,7 +1723,6 @@ async def handle_message(update, context):
         return
 
     if not text: return
-    clean = text.lower().strip()
 
     if clean in ["рар команды", "rar команды", "рар, команды", "rar, команды"]:
         await update.message.reply_text(
