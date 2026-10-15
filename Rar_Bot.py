@@ -30,23 +30,16 @@ RANK_NONE = 0; RANK_LOW = 1; RANK_MID = 2; RANK_SENIOR = 3
 RANK_NAMES = {0: "не админ", 1: "мл. админ", 2: "ср. админ", 3: "ст. админ"}
 
 roulette_games = {}
-ROULETTE_TIMEOUT = 600
+ROULETTE_TIMEOUT = 900
 
 ITEM_NAMES = {
-    "lupa": "Лупа",
-    "pila": "Пила",
-    "naruch": "Наручники",
-    "sigara": "Сигарета",
-    "tabletki": "Таблетки",
-    "telefon": "Телефон",
-    "b_pulya": "Б. Пуля",
-    "nasadka": "Насадка",
-    "adrenalin": "Адреналин",
-    "zerkalo": "Зеркало",
+    "lupa": "Лупа", "pila": "Пила", "naruch": "Наручники", "sigara": "Сигарета",
+    "tabletki": "Таблетки", "telefon": "Телефон", "b_pulya": "Б. Пуля",
+    "nasadka": "Насадка", "adrenalin": "Адреналин", "zerkalo": "Зеркало",
 }
 
 ROUND2_POOL = ["lupa", "pila", "naruch", "sigara"]
-ROUND3_POOL = ["lupa", "pila", "naruch", "sigara", "tabletki", "telefon", "b_pulya", "nasadka", "adrenalin", "zerkalo"]
+ROUND3_POOL = ["tabletki", "telefon", "b_pulya", "nasadka", "adrenalin", "zerkalo"]
 
 ROUND3_START_PHRASES = [
     "Последний раунд. Все всерьез.",
@@ -307,13 +300,15 @@ def rl_hp_bar(hp, max_hp, zerkalo=False):
     filled = "\u25a0" * hp
     empty = "\u25a1" * (max_hp - hp)
     bar = f"<b>{filled}</b>{empty}"
-    if zerkalo:
-        return f"({bar})"
+    if zerkalo: return f"({bar})"
     return bar
 
 
 def rl_make_magazine(count):
-    bullets = random.randint(1, count - 1)
+    if count >= 8:
+        bullets = random.randint(3, count - 1)
+    else:
+        bullets = random.randint(2, count - 1)
     blanks = count - bullets
     mag = ["B"] * bullets + ["H"] * blanks
     random.shuffle(mag)
@@ -351,10 +346,8 @@ def rl_render(game):
         lines.append("")
     status = game.get("status", "")
     if status:
-        nasadka_suffix = ""
-        if game.get("player_nasadka"): nasadka_suffix = " (насадка у тебя)"
-        elif game.get("rar_nasadka"): nasadka_suffix = " (насадка у Rar)"
-        lines.append(f"<i>{status}{nasadka_suffix}</i>")
+        if game.get("nasadka_active"): status += ", насадка активна"
+        lines.append(f"<i>{status}</i>")
     return "\n".join(lines)
 
 
@@ -436,33 +429,6 @@ async def rl_reload(context, game):
     await asyncio.sleep(2)
 
 
-async def rl_apply_damage(context, game, target, dmg, source=""):
-    if target == "player":
-        if game.get("player_zerkalo"):
-            game["player_zerkalo"] = False
-            if dmg == 1:
-                game["rar_hp"] -= 1
-                game["log"] = f"– Зеркало. Урон в Rar.{source}"
-            else:
-                game["player_hp"] -= 1
-                game["rar_hp"] -= 2
-                game["log"] = f"– Зеркало разлетелось. 1 тебе, 2 Rar.{source}"
-        else:
-            game["player_hp"] -= dmg
-    else:
-        if game.get("rar_zerkalo"):
-            game["rar_zerkalo"] = False
-            if dmg == 1:
-                game["player_hp"] -= 1
-                game["log"] = f"– Зеркало Rar. Урон в тебя.{source}"
-            else:
-                game["rar_hp"] -= 1
-                game["player_hp"] -= 2
-                game["log"] = f"– Зеркало Rar разлетелось. 1 ей, 2 тебе.{source}"
-        else:
-            game["rar_hp"] -= dmg
-
-
 async def rl_start(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -470,7 +436,7 @@ async def rl_start(update, context):
     cfg = rl_round_config(1)
     count = random.randint(3, 8)
     mag, bullets, blanks = rl_make_magazine(count)
-    game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "player_nasadka": False, "rar_nasadka": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
     msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
     game["msg_id"] = msg.message_id
     game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
@@ -487,7 +453,7 @@ async def rl_round2_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "player_nasadka": False, "rar_nasadka": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
     roulette_games[gid] = game
     game["log"] = "<b>Появляется ящик.</b>"
     await rl_edit(context, game); await asyncio.sleep(1)
@@ -513,7 +479,7 @@ async def rl_round3_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "player_nasadka": False, "rar_nasadka": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
     roulette_games[gid] = game
     start_phrase = random.choice(ROUND3_START_PHRASES)
     game["log"] = f"– {start_phrase}"
@@ -549,9 +515,12 @@ async def rl_rar_turn(context, game):
     await rl_edit(context, game)
     await asyncio.sleep(2)
 
-    # === Использование предметов Rar ===
+    # Если остался 1 патрон — Rar знает его
+    remaining = len(game["magazine"]) - game["shot_idx"]
+    if remaining == 1:
+        game["rar_knows"] = game["magazine"][game["shot_idx"]]
+
     if game["round"] >= 2 and game["rar_items"]:
-        # Таблетки
         if "tabletki" in game["rar_items"]:
             hp = game["rar_hp"]
             if hp < game["rar_max_hp"] and (hp > 1 or len(game["rar_items"]) == 1):
@@ -567,20 +536,16 @@ async def rl_rar_turn(context, game):
                 if game["rar_hp"] <= 0:
                     await rl_finish(context, game, "player"); return
 
-        # Телефон — узнаёт все патроны (скрыто от игрока)
         if "telefon" in game["rar_items"]:
             game["rar_items"].remove("telefon")
             game["log"] = "– Ага, хм..."
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(3)
-            remaining = game["magazine"][game["shot_idx"]:]
-            if remaining:
-                idx = random.randint(0, len(remaining) - 1)
-                game["rar_knows"] = remaining[idx]
-            else:
-                game["rar_knows"] = None
+            remaining_list = game["magazine"][game["shot_idx"]:]
+            if remaining_list:
+                idx = random.randint(0, len(remaining_list) - 1)
+                game["rar_knows"] = remaining_list[idx]
 
-        # Лупа
         if "lupa" in game["rar_items"] and not game.get("rar_knows"):
             game["rar_items"].remove("lupa")
             game["rar_knows"] = game["magazine"][game["shot_idx"]]
@@ -588,7 +553,6 @@ async def rl_rar_turn(context, game):
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        # Сигарета
         if "sigara" in game["rar_items"] and game["rar_hp"] < game["rar_max_hp"]:
             game["rar_items"].remove("sigara")
             game["rar_hp"] += 1
@@ -596,7 +560,6 @@ async def rl_rar_turn(context, game):
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        # Б. Пуля
         if "b_pulya" in game["rar_items"]:
             game["rar_items"].remove("b_pulya")
             game["magazine"].insert(game["shot_idx"], "B")
@@ -605,15 +568,13 @@ async def rl_rar_turn(context, game):
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        # Насадка
-        if "nasadka" in game["rar_items"] and not game.get("rar_nasadka"):
+        if "nasadka" in game["rar_items"] and not game.get("nasadka_active"):
             game["rar_items"].remove("nasadka")
-            game["rar_nasadka"] = True
+            game["nasadka_active"] = True
             game["log"] = "– Насадка на ствол."
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        # Зеркало
         if "zerkalo" in game["rar_items"] and not game.get("rar_zerkalo"):
             game["rar_items"].remove("zerkalo")
             game["rar_zerkalo"] = True
@@ -621,15 +582,13 @@ async def rl_rar_turn(context, game):
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        # Пила
-        if "pila" in game["rar_items"] and not game.get("rar_nasadka") and game.get("rar_knows") == "B":
+        if "pila" in game["rar_items"] and not game.get("nasadka_active") and game.get("rar_knows") == "B":
             game["rar_items"].remove("pila")
-            game["rar_nasadka"] = True
+            game["nasadka_active"] = True
             game["log"] = "– Срезаю ствол."
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        # Адреналин
         if "adrenalin" in game["rar_items"]:
             stealable = [it for it in game["player_items"] if it != "adrenalin"]
             if stealable:
@@ -639,7 +598,6 @@ async def rl_rar_turn(context, game):
                 game["log"] = f"– Адреналин. Забираю {ITEM_NAMES[stolen]}."
                 game["status"] = "Ход Rar"
                 await rl_edit(context, game); await asyncio.sleep(2)
-                # Сразу использует украденное
                 if stolen == "lupa" and not game.get("rar_knows"):
                     game["rar_knows"] = game["magazine"][game["shot_idx"]]
                 elif stolen == "sigara" and game["rar_hp"] < game["rar_max_hp"]:
@@ -648,7 +606,7 @@ async def rl_rar_turn(context, game):
                     game["magazine"].insert(game["shot_idx"], "B")
                     game["rar_knows"] = "B"
                 elif stolen == "nasadka":
-                    game["rar_nasadka"] = True
+                    game["nasadka_active"] = True
                 elif stolen == "zerkalo":
                     game["rar_zerkalo"] = True
                 elif stolen == "tabletki":
@@ -657,9 +615,8 @@ async def rl_rar_turn(context, game):
                     else:
                         game["rar_hp"] -= 1
                 elif stolen == "pila":
-                    game["rar_nasadka"] = True
+                    game["nasadka_active"] = True
 
-        # Наручники
         if "naruch" in game["rar_items"]:
             game["rar_items"].remove("naruch")
             game["player_skip"] = True
@@ -667,7 +624,6 @@ async def rl_rar_turn(context, game):
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-    # === Принятие решения о выстреле ===
     knows = game.get("rar_knows")
     under_mirror = game.get("rar_zerkalo", False)
     if knows == "B":
@@ -679,9 +635,9 @@ async def rl_rar_turn(context, game):
             target = "player" if random.randint(1, 2) == 1 else "rar"
         else:
             if game["round"] == 3:
-                target = "player" if random.randint(1, 100) <= 65 else "rar"
+                target = "player" if random.randint(1, 100) <= 80 else "rar"
             else:
-                target = "player" if random.randint(1, 100) <= 60 else "rar"
+                target = "player" if random.randint(1, 100) <= 70 else "rar"
 
     game["log"] = "– Стреляю в тебя." if target == "player" else "– Стреляю в себя."
     game["status"] = "Ход Rar"
@@ -690,24 +646,42 @@ async def rl_rar_turn(context, game):
 
     shot = game["magazine"][game["shot_idx"]]
     game["shot_idx"] += 1
-    dmg = 2 if game.get("rar_nasadka") else 1
-    if shot == "H" and game.get("rar_nasadka"):
-        game["rar_nasadka"] = False
+    dmg = 2 if game.get("nasadka_active") else 1
 
     if shot == "B":
-        game["log"] = "<b>Попадание.</b>"
-        target_for_damage = target
-        await rl_apply_damage(context, game, target_for_damage, dmg)
+        if target == "player":
+            if game.get("player_zerkalo"):
+                game["player_zerkalo"] = False
+                if dmg == 1:
+                    game["rar_hp"] -= 1
+                    game["log"] = "<b>Зеркало. Урон в Rar.</b>"
+                else:
+                    game["player_hp"] -= 1
+                    game["rar_hp"] -= 2
+                    game["log"] = "<b>Зеркало разлетелось. 1 тебе, 2 Rar.</b>"
+            else:
+                game["player_hp"] -= dmg
+                game["log"] = "<b>Попадание.</b>"
+        else:
+            if game.get("rar_zerkalo"):
+                game["rar_zerkalo"] = False
+                if dmg == 1:
+                    game["player_hp"] -= 1
+                    game["log"] = "<b>Зеркало Rar. Урон в тебя.</b>"
+                else:
+                    game["rar_hp"] -= 1
+                    game["player_hp"] -= 2
+                    game["log"] = "<b>Зеркало Rar разлетелось. 1 ей, 2 тебе.</b>"
+            else:
+                game["rar_hp"] -= dmg
+                game["log"] = "<b>Попадание.</b>"
+        if game.get("nasadka_active"): game["nasadka_active"] = False
     else:
         game["log"] = "<b>Щелчок. Пусто.</b>"
-        if game.get("rar_nasadka"):
-            game["rar_nasadka"] = False
-            if under_mirror:
-                game["player_hp"] -= 1
-                game["log"] = "<b>Разрыв насадки в зеркало.</b>"
-            else:
-                game["rar_hp"] -= 1
-                game["log"] = "<b>Разрыв насадки.</b>"
+        if game.get("nasadka_active"):
+            game["nasadka_active"] = False
+            game["rar_hp"] -= 1
+            game["log"] = "<b>Разрыв насадки.</b>"
 
     game["rar_knows"] = None
 
@@ -769,8 +743,7 @@ async def rl_callback(update, context):
             try: await q.answer("Это не твоя игра.", show_alert=True)
             except Exception: pass
             return
-        await rl_offer_round2(context, gid, q.message.chat_id)
-        return
+        await rl_offer_round2(context, gid, q.message.chat_id); return
     if data.startswith("rl_offer3_"):
         gid = data.split("_")[-1]
         game = roulette_games.get(gid)
@@ -779,8 +752,7 @@ async def rl_callback(update, context):
             try: await q.answer("Это не твоя игра.", show_alert=True)
             except Exception: pass
             return
-        await rl_offer_round3(context, gid, q.message.chat_id)
-        return
+        await rl_offer_round3(context, gid, q.message.chat_id); return
     if data.startswith("rl_r2_"):
         gid = data.split("_")[-1]
         game = roulette_games.get(gid)
@@ -789,8 +761,7 @@ async def rl_callback(update, context):
             try: await q.answer("Это не твоя игра.", show_alert=True)
             except Exception: pass
             return
-        await rl_round2_start(context, gid, q.message.chat_id)
-        return
+        await rl_round2_start(context, gid, q.message.chat_id); return
     if data.startswith("rl_r3_"):
         gid = data.split("_")[-1]
         game = roulette_games.get(gid)
@@ -799,7 +770,25 @@ async def rl_callback(update, context):
             try: await q.answer("Это не твоя игра.", show_alert=True)
             except Exception: pass
             return
-        await rl_round3_start(context, gid, q.message.chat_id)
+        await rl_round3_start(context, gid, q.message.chat_id); return
+
+    if data.startswith("rl_adr_cancel_"):
+        gid = data.split("_")[-1]
+        game = roulette_games.get(gid)
+        if game: await rl_edit(context, game)
+        return
+    if data.startswith("rl_adr_"):
+        parts = data.split("_")
+        item = parts[2]; gid = parts[3]
+        game = roulette_games.get(gid)
+        if not game or game["player_id"] != user_id: return
+        if item not in game["rar_items"]: return
+        if "adrenalin" not in game["player_items"]: return
+        game["player_items"].remove("adrenalin")
+        game["rar_items"].remove(item)
+        game["player_items"].append(item)
+        game["log"] = f"– Забрал {ITEM_NAMES[item]}."
+        await rl_edit(context, game)
         return
 
     parts = data.split("_")
@@ -819,24 +808,47 @@ async def rl_callback(update, context):
 
         shot = game["magazine"][game["shot_idx"]]
         game["shot_idx"] += 1
-        dmg = 2 if game.get("player_nasadka") else 1
+        dmg = 2 if game.get("nasadka_active") else 1
 
         if shot == "B":
-            game["log"] = "<b>Попадание.</b>"
-            await rl_apply_damage(context, game, target, dmg)
+            if target == "self":
+                if game.get("player_zerkalo"):
+                    game["player_zerkalo"] = False
+                    if dmg == 1:
+                        game["rar_hp"] -= 1
+                        game["log"] = "<b>Зеркало. Урон в Rar.</b>"
+                    else:
+                        game["player_hp"] -= 1
+                        game["rar_hp"] -= 2
+                        game["log"] = "<b>Зеркало разлетелось. 1 тебе, 2 Rar.</b>"
+                else:
+                    game["player_hp"] -= dmg
+                    game["log"] = "<b>Попадание.</b>"
+            else:
+                if game.get("rar_zerkalo"):
+                    game["rar_zerkalo"] = False
+                    if dmg == 1:
+                        game["player_hp"] -= 1
+                        game["log"] = "<b>Зеркало Rar. Урон в тебя.</b>"
+                    else:
+                        game["rar_hp"] -= 1
+                        game["player_hp"] -= 2
+                        game["log"] = "<b>Зеркало Rar разлетелось. 1 ей, 2 тебе.</b>"
+                else:
+                    game["rar_hp"] -= dmg
+                    game["log"] = "<b>Попадание.</b>"
+            if game.get("nasadka_active"): game["nasadka_active"] = False
         else:
             game["log"] = "<b>Щелчок. Пусто.</b>"
-            if game.get("player_nasadka"):
-                game["player_nasadka"] = False
+            if game.get("nasadka_active"):
+                game["nasadka_active"] = False
                 if game.get("player_zerkalo"):
+                    game["player_zerkalo"] = False
                     game["rar_hp"] -= 1
                     game["log"] = "<b>Разрыв насадки в зеркало.</b>"
                 else:
                     game["player_hp"] -= 1
                     game["log"] = "<b>Разрыв насадки.</b>"
-
-        if shot == "B" and game.get("player_nasadka"):
-            game["player_nasadka"] = False
 
         if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
         if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
@@ -893,7 +905,7 @@ async def rl_callback(update, context):
             game["log"] = f"– Следующий: {label}."
         elif item == "pila":
             game["player_items"].remove("pila")
-            game["player_nasadka"] = True
+            game["nasadka_active"] = True
             game["log"] = "– Ствол срезан."
         elif item == "naruch":
             game["player_items"].remove("naruch")
@@ -938,7 +950,7 @@ async def rl_callback(update, context):
             game["log"] = "– Вставляю боевой."
         elif item == "nasadka":
             game["player_items"].remove("nasadka")
-            game["player_nasadka"] = True
+            game["nasadka_active"] = True
             game["log"] = "– Насадка на ствол."
         elif item == "zerkalo":
             game["player_items"].remove("zerkalo")
@@ -949,25 +961,31 @@ async def rl_callback(update, context):
             if not stealable:
                 game["log"] = "– У Rar нет предметов."
                 await rl_edit(context, game); return
-            game["player_items"].remove("adrenalin")
-            stolen = random.choice(stealable)
-            game["rar_items"].remove(stolen)
-            game["player_items"].append(stolen)
-            game["log"] = f"– Адреналин. Забираю {ITEM_NAMES[stolen]}."
-            await rl_edit(context, game); await asyncio.sleep(2)
-            # Игрок должен нажать на предмет сам — оставляем в инвентаре
+            rows = []
+            for it in stealable:
+                rows.append([InlineKeyboardButton(ITEM_NAMES[it], callback_data=f"rl_adr_{it}_{gid}")])
+            rows.append([InlineKeyboardButton("Отмена", callback_data=f"rl_adr_cancel_{gid}")])
+            await context.bot.edit_message_text(
+                chat_id=game["chat_id"], message_id=game["msg_id"],
+                text="Выбери предмет:", reply_markup=InlineKeyboardMarkup(rows))
             return
         await rl_edit(context, game)
         return
 
 
-async def rl_timeout_loop():
+async def rl_timeout_loop(app):
     await asyncio.sleep(60)
     while True:
         try:
             now = time.time()
             for gid, game in list(roulette_games.items()):
                 if now - game["last_action"] > ROULETTE_TIMEOUT:
+                    try:
+                        await app.bot.edit_message_text(
+                            chat_id=game["chat_id"], message_id=game["msg_id"],
+                            text="Сессия рулетки подошла к концу.",
+                            reply_markup=None)
+                    except Exception: pass
                     roulette_games.pop(gid, None)
             for gid, game in list(duel_games.items()):
                 if now - game.get("last_action", 0) > DUEL_TIMEOUT:
@@ -1373,7 +1391,6 @@ def cleanup_inline_result_cache():
     to_delete = [rid for rid, (_, ts) in inline_result_cache.items() if now - ts > INLINE_RESULT_CACHE_TTL]
     for rid in to_delete: del inline_result_cache[rid]
 
-
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
 answers_rar = ["Ммм?", "Что такое?", "Звали?", "Я не сплю... Честно!!!", "Что то хочешь?", "Zzz...", "Ау?"]
@@ -1395,7 +1412,7 @@ answers_ref = [
 "Находиться в сети иногда очень рискованно... Словно идти в дождь без зонта!", "ROSES ARE RED. VIOLETS ARE BLUE. RAR IS WIN. USER IS YOU.\nНадо как следует над этим подумать...",
 "Этот чат будто свет, что окрыляет меня... Пока вы со мной моя свеча не погаснет!", "Иногда, когда я засыпаю, мне снится, будто бы я в каком то Белом пространстве... Ох, бедный Мяво...",
 "What, простите? О. What, простите? Я... Я ведь обычная. Как пакет молока внутри пакета молока. Пожалуйста, не смотрите на меня так...", "Ты думал, что тебе выпадет спокойный и добрый вайб трек? Увы, но монетка выпала решкой!",
-"– Тук-тук.\n– Кто там?\n– Перебивающий кролик!\n– Какой еще перебив...\n– Кикикики! Снова попалассь, Сил!\nКакая все таки дурацкая шутка...", "Иногда мне кажется, что этот чат это еще одна дверь в моем сне...",
+"– Тук-тук.\n– Кто там?\n– Перебивающий кролик!\n– Какой еще перебив...\n– Кикикики! Снова попалась, Сил!\nКакая все таки дурацкая шутка...", "Иногда мне кажется, что этот чат это еще одна дверь в моем сне...",
 "Интересно, если бы мне дали прозвище лишь из буквы и цифры, то какое бы оно было? Наверное 6O!", "Моя коллекция прям как стих! Каждая песня складывается в строчку, образуя свою реальность!!!"
 ]
 
