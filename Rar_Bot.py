@@ -240,8 +240,6 @@ async def check_user_rank(update, context, chat_id, user_id, required_rank):
     if rank < required_rank:
         await update.message.reply_text("Не дорос еще! Недостаточно прав!!!"); return False
     return True
-
-
 # ==================== ДУЭЛЬ ====================
 
 async def duel_start(update, context, hard=False):
@@ -495,8 +493,6 @@ async def rl_round3_start(context, gid, chat_id):
     game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
     game["status"] = "Твой ход"
     await rl_edit(context, game)
-
-
 async def rl_rar_turn(context, game):
     if game.get("finished"): return
     if game.get("rar_skip"):
@@ -515,7 +511,6 @@ async def rl_rar_turn(context, game):
     await rl_edit(context, game)
     await asyncio.sleep(2)
 
-    # Если остался 1 патрон — Rar знает его
     remaining = len(game["magazine"]) - game["shot_idx"]
     if remaining == 1:
         game["rar_knows"] = game["magazine"][game["shot_idx"]]
@@ -1390,6 +1385,7 @@ def cleanup_inline_result_cache():
     now = time.time()
     to_delete = [rid for rid, (_, ts) in inline_result_cache.items() if now - ts > INLINE_RESULT_CACHE_TTL]
     for rid in to_delete: del inline_result_cache[rid]
+
 
 answers_coin = ["Выпал орёл!", "Выпала решка!", "Иии... выпадает орёл!", "Иии... выпадает решка!"]
 answers_love = ["we.all.love.Rar", "Вы навсегда в моем сердце. we.all.love.Rar", "Кажется, мы все связаны. we.all.love.Rar", "Сеть помнит каждого из вас. we.all.love.Rar"]
