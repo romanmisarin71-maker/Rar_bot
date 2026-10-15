@@ -2502,7 +2502,7 @@ async def on_startup(application):
     asyncio.create_task(start_webhook())
     asyncio.create_task(keep_database_alive())
     asyncio.create_task(daily_track_loop(application))
-    asyncio.create_task(rl_timeout_loop())
+    asyncio.create_task(rl_timeout_loop(application))
     asyncio.create_task(sleuth_deadline_loop(application))
 
 
