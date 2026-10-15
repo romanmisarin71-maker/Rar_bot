@@ -453,7 +453,6 @@ async def rl_reload_with_items(context, game, bonus):
     await rl_edit(context, game)
     await asyncio.sleep(2)
 
-    # Добор предметов
     if game["round"] == 2:
         limit = ROUND2_ITEM_LIMIT
         pool = ROUND2_POOL
@@ -484,7 +483,6 @@ async def rl_reload_with_items(context, game, bonus):
 
 
 async def rl_reload(context, game):
-    """Обычная перезарядка (без добора) — используется для контекста."""
     await rl_reload_with_items(context, game, 0)
 
 
@@ -554,7 +552,6 @@ async def rl_round3_start(context, gid, chat_id):
     game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
     game["status"] = "Твой ход"
     await rl_edit(context, game)
-
 async def rl_rar_turn(context, game):
     if game.get("finished"): return
     if game.get("rar_skip"):
@@ -580,7 +577,6 @@ async def rl_rar_turn(context, game):
     if game["round"] >= 2 and game["rar_items"]:
         if "tabletki" in game["rar_items"]:
             hp = game["rar_hp"]
-            # НЕ использует таблетки, если hp >= max-1 (кроме случая hp=1 и это последний предмет)
             should_use = (hp <= game["rar_max_hp"] - 2) or (hp == 1 and len(game["rar_items"]) == 1)
             if should_use:
                 game["rar_items"].remove("tabletki")
@@ -720,7 +716,7 @@ async def rl_rar_turn(context, game):
                 game["player_zerkalo"] = False
                 if dmg == 1:
                     game["rar_hp"] -= 1
-                    game["log"] = "<b>Зеркало. Урон в Rar.</b>"
+                    game["log"] = "<b>Зеркало треснуло. Урон в Rar.</b>"
                 else:
                     game["player_hp"] -= 1
                     game["rar_hp"] -= 2
@@ -733,7 +729,7 @@ async def rl_rar_turn(context, game):
                 game["rar_zerkalo"] = False
                 if dmg == 1:
                     game["player_hp"] -= 1
-                    game["log"] = "<b>Зеркало Rar. Урон в тебя.</b>"
+                    game["log"] = "<b>Зеркало Rar треснуло. Урон в тебя.</b>"
                 else:
                     game["rar_hp"] -= 1
                     game["player_hp"] -= 2
@@ -741,7 +737,7 @@ async def rl_rar_turn(context, game):
             else:
                 game["rar_hp"] -= dmg
                 game["log"] = "<b>Попадание.</b>"
-        if game.get("nasadka_active"): game["nasadka_active"] = False
+        # НАСАДКА ОСТАЁТСЯ — не сбрасываем при боевом
     else:
         game["log"] = "<b>Щелчок. Пусто.</b>"
         if game.get("nasadka_active"):
@@ -786,7 +782,6 @@ async def rl_rar_turn(context, game):
 # ==================== ОБРАБОТКА КНОПОК РУЛЕТКИ ====================
 
 async def rl_apply_stolen_item(context, game, item):
-    """Применяет эффект украденного адреналином предмета СРАЗУ."""
     if item == "lupa":
         game["player_knows"] = game["magazine"][game["shot_idx"]]
         label = "боевой" if game["player_knows"] == "B" else "холостой"
@@ -895,7 +890,6 @@ async def rl_callback(update, context):
         if game: await rl_edit(context, game)
         return
     if data.startswith("rl_adr_"):
-        # rl_adr_{item}_{gid}
         parts = data.split("_")
         if len(parts) < 4: return
         item = parts[2]; gid = parts[3]
@@ -911,7 +905,6 @@ async def rl_callback(update, context):
         await rl_edit(context, game)
         return
 
-    # rl_shoot_self_{gid} / rl_shoot_rar_{gid} / rl_item_{item}_{gid}
     if data.startswith("rl_shoot_"):
         parts = data.split("_")
         target = parts[2]  # self / rar
@@ -936,7 +929,7 @@ async def rl_callback(update, context):
                     game["player_zerkalo"] = False
                     if dmg == 1:
                         game["rar_hp"] -= 1
-                        game["log"] = "<b>Зеркало. Урон в Rar.</b>"
+                        game["log"] = "<b>Зеркало треснуло. Урон в Rar.</b>"
                     else:
                         game["player_hp"] -= 1
                         game["rar_hp"] -= 2
@@ -949,7 +942,7 @@ async def rl_callback(update, context):
                     game["rar_zerkalo"] = False
                     if dmg == 1:
                         game["player_hp"] -= 1
-                        game["log"] = "<b>Зеркало Rar. Урон в тебя.</b>"
+                        game["log"] = "<b>Зеркало Rar треснуло. Урон в тебя.</b>"
                     else:
                         game["rar_hp"] -= 1
                         game["player_hp"] -= 2
@@ -957,7 +950,7 @@ async def rl_callback(update, context):
                 else:
                     game["rar_hp"] -= dmg
                     game["log"] = "<b>Попадание.</b>"
-            if game.get("nasadka_active"): game["nasadka_active"] = False
+            # НАСАДКА ОСТАЁТСЯ — не сбрасываем при боевом
         else:
             game["log"] = "<b>Щелчок. Пусто.</b>"
             if game.get("nasadka_active"):
@@ -997,7 +990,6 @@ async def rl_callback(update, context):
         return
 
     if data.startswith("rl_item_"):
-        # rl_item_{item}_{gid}  — но item может содержать "_"? Нет, наши ключи без "_"
         parts = data.split("_")
         if len(parts) < 4: return
         item = parts[2]; gid = parts[3]
@@ -1563,7 +1555,7 @@ async def inline_query_handler(update, context):
             tracks = pick_random_with_antirepeat(user_id, limit=20)
             for i, (fid, title) in enumerate(tracks):
                 results.append(InlineQueryResultCachedAudio(id=f"rand_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
-            results.append(InlineQueryResultArticle(id="shuffle", title="Новый набор песен", description="Показать другие случайные треки", thumbnail_url=RAR_LOGO_URL, input_message_content=InputTextMessageContent("Новый набор"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
+            results.append(InlineQueryResultArticle(id="shuffle", title="Новый набор песен", description="Показать другие случайные треки", thumbnail_url=RAR_LOGO_URL, input_text_message_content=InputTextMessageContent("Новый набор"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
             await safe_answer_inline(update, context, results, cache_time=0)
         elif query.startswith("плейлист "):
             pl_name = query[9:].strip()
