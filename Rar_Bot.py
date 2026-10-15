@@ -361,7 +361,10 @@ def rl_render(game):
         lines.append("")
     status = game.get("status", "")
     if status:
-        if game.get("nasadka_active"): status += ", насадка активна"
+        active_parts = []
+        if game.get("nasadka_active"): active_parts.append("насадка активна")
+        if game.get("pila_active"): active_parts.append("ствол срезан")
+        if active_parts: status += ", " + ", ".join(active_parts)
         lines.append(f"<i>{status}</i>")
     return "\n".join(lines)
 
@@ -493,7 +496,7 @@ async def rl_start(update, context):
     cfg = rl_round_config(1)
     count = random.randint(3, 8)
     mag, bullets, blanks = rl_make_magazine(count)
-    game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
     msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
     game["msg_id"] = msg.message_id
     game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
@@ -510,7 +513,7 @@ async def rl_round2_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
     roulette_games[gid] = game
     game["log"] = "<b>Появляется ящик.</b>"
     await rl_edit(context, game); await asyncio.sleep(1)
@@ -536,7 +539,7 @@ async def rl_round3_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
     roulette_games[gid] = game
     start_phrase = random.choice(ROUND3_START_PHRASES)
     game["log"] = f"– {start_phrase}"
@@ -552,6 +555,7 @@ async def rl_round3_start(context, gid, chat_id):
     game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
     game["status"] = "Твой ход"
     await rl_edit(context, game)
+
 async def rl_rar_turn(context, game):
     if game.get("finished"): return
     if game.get("rar_skip"):
@@ -637,9 +641,9 @@ async def rl_rar_turn(context, game):
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        if "pila" in game["rar_items"] and not game.get("nasadka_active") and game.get("rar_knows") == "B":
+        if "pila" in game["rar_items"] and not game.get("pila_active") and game.get("rar_knows") == "B":
             game["rar_items"].remove("pila")
-            game["nasadka_active"] = True
+            game["pila_active"] = True
             game["log"] = "– Срезаю ствол."
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
@@ -670,7 +674,7 @@ async def rl_rar_turn(context, game):
                     else:
                         game["rar_hp"] -= 1
                 elif stolen == "pila":
-                    game["nasadka_active"] = True
+                    game["pila_active"] = True
                 elif stolen == "naruch":
                     game["player_skip"] = True
                 elif stolen == "telefon":
@@ -708,7 +712,7 @@ async def rl_rar_turn(context, game):
 
     shot = game["magazine"][game["shot_idx"]]
     game["shot_idx"] += 1
-    dmg = 2 if game.get("nasadka_active") else 1
+    dmg = 2 if (game.get("nasadka_active") or game.get("pila_active")) else 1
 
     if shot == "B":
         if target == "player":
@@ -737,13 +741,17 @@ async def rl_rar_turn(context, game):
             else:
                 game["rar_hp"] -= dmg
                 game["log"] = "<b>Попадание.</b>"
-        # НАСАДКА ОСТАЁТСЯ — не сбрасываем при боевом
+        # Насадка остаётся. Пила сбрасывается.
+        if game.get("pila_active"):
+            game["pila_active"] = False
     else:
         game["log"] = "<b>Щелчок. Пусто.</b>"
         if game.get("nasadka_active"):
             game["nasadka_active"] = False
             game["rar_hp"] -= 1
             game["log"] = "<b>Разрыв насадки.</b>"
+        if game.get("pila_active"):
+            game["pila_active"] = False
 
     game["rar_knows"] = None
 
@@ -787,7 +795,7 @@ async def rl_apply_stolen_item(context, game, item):
         label = "боевой" if game["player_knows"] == "B" else "холостой"
         game["log"] = f"– Адреналин. Забираю лупу. Следующий: {label}."
     elif item == "pila":
-        game["nasadka_active"] = True
+        game["pila_active"] = True
         game["log"] = "– Адреналин. Забираю пилу. Ствол срезан."
     elif item == "naruch":
         game["rar_skip"] = True
@@ -921,7 +929,7 @@ async def rl_callback(update, context):
 
         shot = game["magazine"][game["shot_idx"]]
         game["shot_idx"] += 1
-        dmg = 2 if game.get("nasadka_active") else 1
+        dmg = 2 if (game.get("nasadka_active") or game.get("pila_active")) else 1
 
         if shot == "B":
             if target == "self":
@@ -950,7 +958,9 @@ async def rl_callback(update, context):
                 else:
                     game["rar_hp"] -= dmg
                     game["log"] = "<b>Попадание.</b>"
-            # НАСАДКА ОСТАЁТСЯ — не сбрасываем при боевом
+            # Насадка остаётся. Пила сбрасывается.
+            if game.get("pila_active"):
+                game["pila_active"] = False
         else:
             game["log"] = "<b>Щелчок. Пусто.</b>"
             if game.get("nasadka_active"):
@@ -962,6 +972,8 @@ async def rl_callback(update, context):
                 else:
                     game["player_hp"] -= 1
                     game["log"] = "<b>Разрыв насадки.</b>"
+            if game.get("pila_active"):
+                game["pila_active"] = False
 
         if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
         if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
@@ -1009,7 +1021,7 @@ async def rl_callback(update, context):
             game["log"] = f"– Следующий: {label}."
         elif item == "pila":
             game["player_items"].remove("pila")
-            game["nasadka_active"] = True
+            game["pila_active"] = True
             game["log"] = "– Ствол срезан."
         elif item == "naruch":
             game["player_items"].remove("naruch")
@@ -1555,7 +1567,7 @@ async def inline_query_handler(update, context):
             tracks = pick_random_with_antirepeat(user_id, limit=20)
             for i, (fid, title) in enumerate(tracks):
                 results.append(InlineQueryResultCachedAudio(id=f"rand_{i}_{fid[:20]}", audio_file_id=fid, caption=clean_title(title)))
-            results.append(InlineQueryResultArticle(id="shuffle", title="Новый набор песен", description="Показать другие случайные треки", thumbnail_url=RAR_LOGO_URL, input_text_message_content=InputTextMessageContent("Новый набор"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
+            results.append(InlineQueryResultArticle(id="shuffle", title="Новый набор песен", description="Показать другие случайные треки", thumbnail_url=RAR_LOGO_URL, input_message_content=InputTextMessageContent("Новый набор"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Новый набор", switch_inline_query_current_chat="дай песню")]])))
             await safe_answer_inline(update, context, results, cache_time=0)
         elif query.startswith("плейлист "):
             pl_name = query[9:].strip()
@@ -2012,7 +2024,7 @@ async def handle_message(update, context):
             await log_to_owner(context, f"[MUTE ERROR] {e}")
         return
 
-    unmute_match = re.match(r"^(рар|rar)[,.]?\s+размут\s*(.*)$", text, re.IGNORECASE)
+    unmute_match = re.match(r"^(рар|rar)[.,]?\s+размут\s*(.*)$", text, re.IGNORECASE)
     if unmute_match:
         if chat_id >= 0:
             await update.message.reply_text("Только в группах"); return
