@@ -529,7 +529,6 @@ async def rl_round3_start(context, gid, chat_id):
     game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
     game["status"] = "Твой ход"
     await rl_edit(context, game)
-        await rl_edit(context, game)
 
 
 async def rl_rar_turn(context, game):
