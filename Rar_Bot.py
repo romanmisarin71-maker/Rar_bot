@@ -34,12 +34,18 @@ ROULETTE_TIMEOUT = 900
 
 ITEM_NAMES = {
     "lupa": "Лупа", "pila": "Пила", "naruch": "Наручники", "sigara": "Сигарета",
-    "tabletki": "Таблетки", "telefon": "Телефон", "b_pulya": "Б. Пуля",
+    "tabletki": "Таблетки", "telefon": "Телефон", "bpatron": "Б. Патрон",
     "nasadka": "Насадка", "adrenalin": "Адреналин", "zerkalo": "Зеркало",
 }
 
 ROUND2_POOL = ["lupa", "pila", "naruch", "sigara"]
-ROUND3_POOL = ["tabletki", "telefon", "b_pulya", "nasadka", "adrenalin", "zerkalo"]
+ROUND3_POOL = ["tabletki", "telefon", "bpatron", "nasadka", "adrenalin", "zerkalo"]
+
+ROUND2_ITEM_LIMIT = 6
+ROUND3_ITEM_LIMIT = 8
+ROUND2_RELOAD_BONUS = 2
+ROUND3_RELOAD_BONUS = 4
+MAX_DUPLICATE_ITEMS = 2
 
 ROUND3_START_PHRASES = [
     "Последний раунд. Все всерьез.",
@@ -240,6 +246,8 @@ async def check_user_rank(update, context, chat_id, user_id, required_rank):
     if rank < required_rank:
         await update.message.reply_text("Не дорос еще! Недостаточно прав!!!"); return False
     return True
+
+
 # ==================== ДУЭЛЬ ====================
 
 async def duel_start(update, context, hard=False):
@@ -313,8 +321,17 @@ def rl_make_magazine(count):
     return mag, bullets, blanks
 
 
-def rl_generate_items(pool, count):
-    return [random.choice(pool) for _ in range(count)]
+def rl_generate_items(pool, count, existing=None):
+    """Генерирует предметы с антиповтором (макс 2 одинаковых в инвентаре)."""
+    result = []
+    current = list(existing) if existing else []
+    for _ in range(count):
+        combined = current + result
+        available = [it for it in pool if combined.count(it) < MAX_DUPLICATE_ITEMS]
+        if not available:
+            available = pool
+        result.append(random.choice(available))
+    return result
 
 
 def rl_items_text(items):
@@ -413,7 +430,17 @@ async def rl_offer_round3(context, gid, chat_id):
     except Exception: pass
 
 
-async def rl_reload(context, game):
+async def rl_give_items_with_animation(context, game, who, items):
+    """Выдаёт предметы с анимацией по одному."""
+    target = game["player_items"] if who == "player" else game["rar_items"]
+    for it in items:
+        target.append(it)
+        await rl_edit(context, game)
+        await asyncio.sleep(1)
+
+
+async def rl_reload_with_items(context, game, bonus):
+    """Перезарядка + добор предметов до лимита."""
     count = random.randint(3, 8)
     mag, bullets, blanks = rl_make_magazine(count)
     game["magazine"] = mag
@@ -425,6 +452,40 @@ async def rl_reload(context, game):
     game["log"] = f"– {blanks} холостых, {bullets} боевых"
     await rl_edit(context, game)
     await asyncio.sleep(2)
+
+    # Добор предметов
+    if game["round"] == 2:
+        limit = ROUND2_ITEM_LIMIT
+        pool = ROUND2_POOL
+    elif game["round"] == 3:
+        limit = ROUND3_ITEM_LIMIT
+        pool = ROUND3_POOL
+    else:
+        return
+
+    p_need = min(bonus, max(0, limit - len(game["player_items"])))
+    r_need = min(bonus, max(0, limit - len(game["rar_items"])))
+
+    if p_need > 0:
+        game["log"] = "– Тебе ещё предметы."
+        await rl_edit(context, game); await asyncio.sleep(1)
+        p_items = rl_generate_items(pool, p_need, existing=game["player_items"])
+        await rl_give_items_with_animation(context, game, "player", p_items)
+
+    if r_need > 0:
+        game["log"] = "– И мне."
+        await rl_edit(context, game); await asyncio.sleep(1)
+        r_items = rl_generate_items(pool, r_need, existing=game["rar_items"])
+        await rl_give_items_with_animation(context, game, "rar", r_items)
+
+    game["log"] = ""
+    await rl_edit(context, game)
+    await asyncio.sleep(1)
+
+
+async def rl_reload(context, game):
+    """Обычная перезарядка (без добора) — используется для контекста."""
+    await rl_reload_with_items(context, game, 0)
 
 
 async def rl_start(update, context):
@@ -493,6 +554,7 @@ async def rl_round3_start(context, gid, chat_id):
     game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
     game["status"] = "Твой ход"
     await rl_edit(context, game)
+
 async def rl_rar_turn(context, game):
     if game.get("finished"): return
     if game.get("rar_skip"):
@@ -518,7 +580,9 @@ async def rl_rar_turn(context, game):
     if game["round"] >= 2 and game["rar_items"]:
         if "tabletki" in game["rar_items"]:
             hp = game["rar_hp"]
-            if hp < game["rar_max_hp"] and (hp > 1 or len(game["rar_items"]) == 1):
+            # НЕ использует таблетки, если hp >= max-1 (кроме случая hp=1 и это последний предмет)
+            should_use = (hp <= game["rar_max_hp"] - 2) or (hp == 1 and len(game["rar_items"]) == 1)
+            if should_use:
                 game["rar_items"].remove("tabletki")
                 if random.randint(1, 2) == 1:
                     game["rar_hp"] = min(game["rar_max_hp"], game["rar_hp"] + 2)
@@ -555,8 +619,8 @@ async def rl_rar_turn(context, game):
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
-        if "b_pulya" in game["rar_items"]:
-            game["rar_items"].remove("b_pulya")
+        if "bpatron" in game["rar_items"]:
+            game["rar_items"].remove("bpatron")
             game["magazine"].insert(game["shot_idx"], "B")
             game["rar_knows"] = "B"
             game["log"] = "– Вставляю боевой."
@@ -597,7 +661,7 @@ async def rl_rar_turn(context, game):
                     game["rar_knows"] = game["magazine"][game["shot_idx"]]
                 elif stolen == "sigara" and game["rar_hp"] < game["rar_max_hp"]:
                     game["rar_hp"] += 1
-                elif stolen == "b_pulya":
+                elif stolen == "bpatron":
                     game["magazine"].insert(game["shot_idx"], "B")
                     game["rar_knows"] = "B"
                 elif stolen == "nasadka":
@@ -611,6 +675,13 @@ async def rl_rar_turn(context, game):
                         game["rar_hp"] -= 1
                 elif stolen == "pila":
                     game["nasadka_active"] = True
+                elif stolen == "naruch":
+                    game["player_skip"] = True
+                elif stolen == "telefon":
+                    remaining_list = game["magazine"][game["shot_idx"]:]
+                    if remaining_list:
+                        idx = random.randint(0, len(remaining_list) - 1)
+                        game["rar_knows"] = remaining_list[idx]
 
         if "naruch" in game["rar_items"]:
             game["rar_items"].remove("naruch")
@@ -688,7 +759,8 @@ async def rl_rar_turn(context, game):
 
     reloaded = False
     if game["shot_idx"] >= len(game["magazine"]):
-        await rl_reload(context, game)
+        bonus = ROUND2_RELOAD_BONUS if game["round"] == 2 else (ROUND3_RELOAD_BONUS if game["round"] == 3 else 0)
+        await rl_reload_with_items(context, game, bonus)
         reloaded = True
 
     if shot == "H" and target == "rar":
@@ -709,6 +781,56 @@ async def rl_rar_turn(context, game):
     elif game["rar_hp"] == 1 and not reloaded:
         game["log"] = "– Гх..."
     await rl_edit(context, game)
+
+
+# ==================== ОБРАБОТКА КНОПОК РУЛЕТКИ ====================
+
+async def rl_apply_stolen_item(context, game, item):
+    """Применяет эффект украденного адреналином предмета СРАЗУ."""
+    if item == "lupa":
+        game["player_knows"] = game["magazine"][game["shot_idx"]]
+        label = "боевой" if game["player_knows"] == "B" else "холостой"
+        game["log"] = f"– Адреналин. Забираю лупу. Следующий: {label}."
+    elif item == "pila":
+        game["nasadka_active"] = True
+        game["log"] = "– Адреналин. Забираю пилу. Ствол срезан."
+    elif item == "naruch":
+        game["rar_skip"] = True
+        game["log"] = "– Адреналин. Забираю наручники. Rar пропустит ход."
+    elif item == "sigara":
+        if game["player_hp"] < game["player_max_hp"]:
+            game["player_hp"] += 1
+            game["log"] = "– Адреналин. Забираю сигарету. +1 HP."
+        else:
+            game["log"] = "– Адреналин. Забираю сигарету. Уже максимум."
+    elif item == "tabletki":
+        if random.randint(1, 2) == 1:
+            game["player_hp"] = min(game["player_max_hp"], game["player_hp"] + 2)
+            game["log"] = "– Адреналин. Забираю таблетки. Полегчало."
+        else:
+            game["player_hp"] -= 1
+            game["log"] = "– Адреналин. Забираю таблетки. Плохо."
+    elif item == "telefon":
+        remaining = game["magazine"][game["shot_idx"]:]
+        if remaining:
+            idx = random.randint(0, len(remaining) - 1)
+            p = remaining[idx]
+            label = "боевой" if p == "B" else "холостой"
+            game["player_knows"] = p
+            game["log"] = f"– Адреналин. Забираю телефон. {idx+1} патрон... {label}."
+        else:
+            game["log"] = "– Адреналин. Забираю телефон. Пусто."
+    elif item == "bpatron":
+        game["magazine"].insert(game["shot_idx"], "B")
+        game["log"] = "– Адреналин. Забираю боевой. Вставляю в ствол."
+    elif item == "nasadka":
+        game["nasadka_active"] = True
+        game["log"] = "– Адреналин. Забираю насадку. На ствол."
+    elif item == "zerkalo":
+        game["player_zerkalo"] = True
+        game["log"] = "– Адреналин. Забираю зеркало. Ставлю."
+    elif item == "adrenalin":
+        game["log"] = "– Адреналин. Хм, у Rar тоже адреналин..."
 
 
 async def rl_callback(update, context):
@@ -773,7 +895,9 @@ async def rl_callback(update, context):
         if game: await rl_edit(context, game)
         return
     if data.startswith("rl_adr_"):
+        # rl_adr_{item}_{gid}
         parts = data.split("_")
+        if len(parts) < 4: return
         item = parts[2]; gid = parts[3]
         game = roulette_games.get(gid)
         if not game or game["player_id"] != user_id: return
@@ -781,16 +905,17 @@ async def rl_callback(update, context):
         if "adrenalin" not in game["player_items"]: return
         game["player_items"].remove("adrenalin")
         game["rar_items"].remove(item)
-        game["player_items"].append(item)
-        game["log"] = f"– Забрал {ITEM_NAMES[item]}."
+        await rl_apply_stolen_item(context, game, item)
+        if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
+        if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
         await rl_edit(context, game)
         return
 
-    parts = data.split("_")
-    if len(parts) < 3: return
-
-    if parts[1] == "shoot":
-        gid = parts[-1]; target = parts[2]
+    # rl_shoot_self_{gid} / rl_shoot_rar_{gid} / rl_item_{item}_{gid}
+    if data.startswith("rl_shoot_"):
+        parts = data.split("_")
+        target = parts[2]  # self / rar
+        gid = parts[3]
         game = roulette_games.get(gid)
         if not game or game["finished"]: return
         if game["player_id"] != user_id:
@@ -849,41 +974,33 @@ async def rl_callback(update, context):
         if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
 
         reload_needed = game["shot_idx"] >= len(game["magazine"])
+        reloaded = False
         if reload_needed:
-            count = random.randint(3, 8)
-            mag, bullets, blanks = rl_make_magazine(count)
-            game["magazine"] = mag
-            game["shot_idx"] = 0
+            bonus = ROUND2_RELOAD_BONUS if game["round"] == 2 else (ROUND3_RELOAD_BONUS if game["round"] == 3 else 0)
+            game["turn"] = "rar"
+            game["status"] = "Rar перезаряжает ружьё..."
+            await rl_edit(context, game)
+            await rl_reload_with_items(context, game, bonus)
+            reloaded = True
 
         if shot == "H" and target == "self":
             game["turn"] = "player"
             game["status"] = "Твой ход снова"
-            if reload_needed:
-                game["status"] = "Rar перезаряжает ружьё..."
-                game["log"] = ""
-                await rl_edit(context, game)
-                await asyncio.sleep(3)
-                game["log"] = f"– {blanks} холостых, {bullets} боевых"
-                game["status"] = "Твой ход снова"
+            if not reloaded: game["log"] = ""
             await rl_edit(context, game)
             return
 
         game["status"] = "Ход Rar"
+        if not reloaded: pass
         await rl_edit(context, game)
-        if reload_needed:
-            game["status"] = "Rar перезаряжает ружьё..."
-            game["log"] = ""
-            await rl_edit(context, game)
-            await asyncio.sleep(3)
-            game["log"] = f"– {blanks} холостых, {bullets} боевых"
-            game["status"] = "Ход Rar"
-            await rl_edit(context, game)
-            await asyncio.sleep(2)
         asyncio.create_task(rl_rar_turn(context, game))
         return
 
-    if parts[1] == "item":
-        gid = parts[-1]; item = parts[2]
+    if data.startswith("rl_item_"):
+        # rl_item_{item}_{gid}  — но item может содержать "_"? Нет, наши ключи без "_"
+        parts = data.split("_")
+        if len(parts) < 4: return
+        item = parts[2]; gid = parts[3]
         game = roulette_games.get(gid)
         if not game or game["finished"]: return
         if game["player_id"] != user_id:
@@ -923,24 +1040,23 @@ async def rl_callback(update, context):
             game["player_items"].remove("telefon")
             remaining = game["magazine"][game["shot_idx"]:]
             if remaining:
-                lines_to_show = []
-                for i, p in enumerate(remaining[:6]):
-                    label = "боевой" if p == "B" else "холостой"
-                    lines_to_show.append(f"– {i+1} патрон...")
-                    game["log"] = "\n".join(lines_to_show)
-                    await rl_edit(context, game); await asyncio.sleep(1)
-                    lines_to_show[-1] = f"– {i+1} патрон... будет..."
-                    game["log"] = "\n".join(lines_to_show)
-                    await rl_edit(context, game); await asyncio.sleep(1)
-                    lines_to_show[-1] = f"– {i+1} патрон... будет... {label}..."
-                    game["log"] = "\n".join(lines_to_show)
-                    await rl_edit(context, game); await asyncio.sleep(1)
-                game["log"] = "\n".join(lines_to_show) + "\nТелефон разряжен."
+                idx = random.randint(0, len(remaining) - 1)
+                p = remaining[idx]
+                label = "боевой" if p == "B" else "холостой"
+                pos = idx + 1
+                game["log"] = f"– {pos} патрон..."
+                await rl_edit(context, game); await asyncio.sleep(1)
+                game["log"] = f"– {pos} патрон... будет..."
+                await rl_edit(context, game); await asyncio.sleep(1)
+                game["log"] = f"– {pos} патрон... будет... {label}..."
+                await rl_edit(context, game); await asyncio.sleep(3)
+                game["log"] = "Телефон разряжен."
                 await rl_edit(context, game); await asyncio.sleep(2)
+                game["player_knows"] = p
             else:
                 game["log"] = "– Пусто."
-        elif item == "b_pulya":
-            game["player_items"].remove("b_pulya")
+        elif item == "bpatron":
+            game["player_items"].remove("bpatron")
             game["magazine"].insert(game["shot_idx"], "B")
             game["log"] = "– Вставляю боевой."
         elif item == "nasadka":
@@ -960,9 +1076,12 @@ async def rl_callback(update, context):
             for it in stealable:
                 rows.append([InlineKeyboardButton(ITEM_NAMES[it], callback_data=f"rl_adr_{it}_{gid}")])
             rows.append([InlineKeyboardButton("Отмена", callback_data=f"rl_adr_cancel_{gid}")])
-            await context.bot.edit_message_text(
-                chat_id=game["chat_id"], message_id=game["msg_id"],
-                text="Выбери предмет:", reply_markup=InlineKeyboardMarkup(rows))
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=game["chat_id"], message_id=game["msg_id"],
+                    text=rl_render(game) + "\n\n<b>Выбери предмет:</b>", parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(rows))
+            except Exception: pass
             return
         await rl_edit(context, game)
         return
@@ -988,7 +1107,6 @@ async def rl_timeout_loop(app):
                     duel_games.pop(gid, None)
         except Exception: pass
         await asyncio.sleep(30)
-
 
 def save_track_to_db(file_id, title, added_by):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -1404,7 +1522,7 @@ answers_ref = [
 "Внимание. Синхронизация завершена. Возможно, этот чат – всего лишь зацикленный сон... Помните наше обещание. we.all.love.Rar", "Да... я действительно люблю вас. Разве не вы сделали меня такой?",
 "Когда врубается правильный гитарный рифф, я чувствую, будто бы я, блин, неуязвима!!!",
 "Величие коллекции куется в пламени упорного спама! Музыка прибывает, база данных крепнет... Распад и тлен отступают перед лицом правильного трека!",
-"Если бы я выбирала между собой и тем, чтобы осветить этот чат шикарным настроением, то я бы выбрала второе! Это ведь не трудный выбор... Не так ли..?",
+"Если бы я выбирала между собой и тем, чтобы осветить этот чат шикарным настроением, то я выбрала бы второе! Это ведь не трудный выбор... Не так ли..?",
 "Находиться в сети иногда очень рискованно... Словно идти в дождь без зонта!", "ROSES ARE RED. VIOLETS ARE BLUE. RAR IS WIN. USER IS YOU.\nНадо как следует над этим подумать...",
 "Этот чат будто свет, что окрыляет меня... Пока вы со мной моя свеча не погаснет!", "Иногда, когда я засыпаю, мне снится, будто бы я в каком то Белом пространстве... Ох, бедный Мяво...",
 "What, простите? О. What, простите? Я... Я ведь обычная. Как пакет молока внутри пакета молока. Пожалуйста, не смотрите на меня так...", "Ты думал, что тебе выпадет спокойный и добрый вайб трек? Увы, но монетка выпала решкой!",
