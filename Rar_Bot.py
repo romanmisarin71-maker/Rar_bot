@@ -85,8 +85,6 @@ ROUND2_RELOAD_BONUS = 2
 ROUND3_RELOAD_BONUS = 4
 MAX_DUPLICATE_ITEMS = 2
 
-# ==================== СЛОВАРЬ ДИАЛОГОВ ====================
-
 DUEL_START_PHRASES = ["Приготовься!!!", "На счет три!!!", "Будь внимателен!!!"]
 DUEL_FINAL_SOUNDS = ["БАХ", "ПАФ"]
 DUEL_PLAYER_WIN_PHRASES = ["Фуух, ты победил✨", "Победа за тобой✨", "Отличная реакция✨"]
@@ -217,7 +215,7 @@ ADMIN_DIALOGS = {
     "group_only_short": "Только в группах",
     "kall_on": "Калл включён!",
     "kall_off": "Калл выключен!",
-    "kall_disabled": "Калл отключён!",
+    "kall_disabled": "",
     "kall_header": "Минуточку внимания!",
     "no_active_members": "Нет активных",
     "empty_list": "Список пуст",
@@ -437,10 +435,7 @@ def set_admin_rank(chat_id, user_id, rank, by_user):
 
 
 async def safe_promote(context, chat_id, target_id, wanted):
-    """
-    Выдаёт только те права, которые есть у бота.
-    Возвращает: (ok, granted_list, skipped_list, err)
-    """
+    """Выдаёт только те права, которые есть у бота. (ok, granted, skipped, err)"""
     try:
         bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
     except Exception as e:
@@ -2239,45 +2234,44 @@ async def handle_message(update, context):
         wanted = RANK_PERMS.get(new_rank, RANK_PERMS[RANK_NONE])
         ok, granted, skipped, err = await safe_promote(context, chat_id, target_user.id, wanted)
 
-        # Ранг в БД ставим ВСЕГДА — даже если Telegram не дал часть прав
+        # Ранг в БД — всегда
         set_admin_rank(chat_id, target_user.id, new_rank, user_id)
 
-        if not ok:
-            skipped_ru = "\n".join(f"• {PERM_NAMES_RU.get(p, p)}" for p in skipped) if skipped else "все"
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=(f"<b>Ошибка повышения</b>\n"
-                          f"Цель: {html_escape(target_user.first_name)} [ID: {target_user.id}]\n"
-                          f"Ранг в БД: {RANK_NAMES.get(new_rank, '?')}\n"
-                          f"Telegram-права не выданы.\n"
-                          f"<b>Ошибка:</b>\n<code>{html_escape(err[:800])}</code>"),
-                    parse_mode="HTML")
-            except Exception: pass
-            await log_to_owner(context, f"[PROMOTE ERROR] chat={chat_id} target={target_user.id} err={err}")
-            await update.message.reply_text(
-                f"{html_escape(target_user.first_name)} теперь {RANK_NAMES.get(new_rank, 'не админ')} (в БД).\n"
-                f"Но Telegram-права выдать не удалось. Подробности отправила тебе в личку.")
-            return
+        # Тихий лог в ЛС — только при skipped/ошибке
+        if not ok or skipped:
+            target_disp = f"{html_escape(target_user.first_name)} [ID: {target_user.id}]"
+            if not ok:
+                skipped_ru = "\n".join(f"• {PERM_NAMES_RU.get(p, p)}" for p in skipped if p != "(fallback)") if skipped else ""
+                lines_ls = [
+                    f"<b>Ошибка повышения</b>",
+                    f"Цель: {target_disp}",
+                    f"Ранг в БД: {RANK_NAMES.get(new_rank, '?')}",
+                    f"Telegram-права не выданы.",
+                    f"Ошибка:",
+                    f"<code>{html_escape(err[:800])}</code>",
+                ]
+                if skipped_ru:
+                    lines_ls.append(f"\n<b>Не выданы права</b> (у бота их нет):\n{skipped_ru}")
+                try:
+                    await context.bot.send_message(chat_id=user_id, text="\n".join(lines_ls), parse_mode="HTML")
+                except Exception: pass
+                await log_to_owner(context, f"[PROMOTE ERROR] chat={chat_id} target={target_user.id} err={err}")
+            else:
+                skipped_ru = "\n".join(f"• {PERM_NAMES_RU.get(p, p)}" for p in skipped if p != "(fallback)")
+                if skipped_ru:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=(f"<b>Повышение с ограничениями</b>\n"
+                                  f"Цель: {target_disp}\n"
+                                  f"Ранг в БД: {RANK_NAMES.get(new_rank, '?')}\n\n"
+                                  f"<b>Не выданы права</b> (у бота их нет):\n{skipped_ru}"),
+                            parse_mode="HTML")
+                    except Exception: pass
+                await log_to_owner(context, f"[PROMOTE PARTIAL] chat={chat_id} target={target_user.id} skipped={skipped}")
 
-        if skipped:
-            skipped_ru = "\n".join(f"• {PERM_NAMES_RU.get(p, p)}" for p in skipped)
-            try:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=(f"<b>Повышение с ограничениями</b>\n"
-                          f"Цель: {html_escape(target_user.first_name)} [ID: {target_user.id}]\n"
-                          f"Ранг в БД: {RANK_NAMES.get(new_rank, '?')}\n\n"
-                          f"<b>Не выданы права</b> (у бота их нет):\n{skipped_ru}"),
-                    parse_mode="HTML")
-            except Exception: pass
-            await log_to_owner(context, f"[PROMOTE PARTIAL] chat={chat_id} target={target_user.id} skipped={skipped}")
-            await update.message.reply_text(
-                f"{html_escape(target_user.first_name)} теперь {RANK_NAMES.get(new_rank, 'не админ')}.\n"
-                f"Часть прав выдать не смогла — отправила тебе список в личку.")
-        else:
-            await update.message.reply_text(f"{html_escape(target_user.first_name)} теперь {RANK_NAMES.get(new_rank, 'не админ')}")
-            await log_to_owner(context, f"[RANK] {target_user.first_name} -> {RANK_NAMES.get(new_rank, 'не админ')} (by {user_id})")
+        # В чат — всегда одно и то же
+        await update.message.reply_text(ADMIN_DIALOGS["rank_changed"].format(имя=html_escape(target_user.first_name), ранг=RANK_NAMES.get(new_rank, 'не админ')))
         return
 
     if incoming in ["рар админы", "rar админы", "рар, админы", "rar, админы"]:
@@ -2761,9 +2755,9 @@ async def handle_message(update, context):
 
     if clean == "калл":
         if chat_id >= 0:
-            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
+            return
         if not get_kall_enabled(chat_id):
-            await update.message.reply_text(ADMIN_DIALOGS["kall_disabled"]); return
+            return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         try:
             user_ids = get_chat_members(chat_id)
