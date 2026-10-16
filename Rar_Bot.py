@@ -1,4 +1,4 @@
-import os, random, re, time, asyncio, traceback, psycopg2
+import os, random, re, time, asyncio, traceback, psycopg2, uuid
 from collections import OrderedDict
 from html import escape as html_escape
 from urllib.parse import urlparse
@@ -47,22 +47,263 @@ ROUND2_RELOAD_BONUS = 2
 ROUND3_RELOAD_BONUS = 4
 MAX_DUPLICATE_ITEMS = 2
 
-ROUND3_START_PHRASES = [
-    "Последний раунд. Все всерьез.",
-    "Удача больше не поможет.",
-    "Последний раунд. Будь внимателен.",
-    "Победитель будет только один.",
-    "Хватит игр. Я покажу, кто здесь дилер.",
-]
+# ==================== СЛОВАРЬ ДИАЛОГОВ ====================
 
-DUEL_START_PHRASES = ["Готов?", "На счет три.", "Не моргай."]
-DUEL_FINAL_SOUNDS = ["БДЫЩ", "БАХ", "ПАФ"]
-DUEL_PLAYER_WIN_PHRASES = ["Ты выиграл.", "Победа за тобой.", "Хорошая работа."]
-DUEL_RAR_WIN_PHRASES = ["Победа за мной.", "Ты не успел.", "Слишком медленно."]
+DUEL_START_PHRASES = ["Приготовься!!!", "На счет три!!!", "Будь внимателен!!!"]
+DUEL_FINAL_SOUNDS = ["БАХ", "ПАФ"]
+DUEL_PLAYER_WIN_PHRASES = ["Фуух, ты победил✨", "Победа за тобой✨", "Отличная реакция✨"]
+DUEL_RAR_WIN_PHRASES = ["ХА, Я ПОБЕДИЛА!!!", "Как же я хороша в стрельбе!", "Не зря мне доверили огнестрел!"]
 DUEL_ACTIONS = ["ПИУ", "ПАУ", "ПАФ"]
 DUEL_COUNTERS = {"ПИУ": "ПАУ", "ПАУ": "ПИУ", "ПАФ": "ПАФ"}
 duel_games = {}
 DUEL_TIMEOUT = 120
+
+ROUND3_START_PHRASES = [
+    "Последний раунд. Все всерьез.",
+    "Удача больше не поможет.",
+    "Последний раунд. Внимательнее.",
+    "Победитель будет только один.",
+    "Хватит игр. Я покажу, кто здесь дилер.",
+]
+
+# Реплики рулетки с разделением rar/player
+RL_DIALOGS = {
+    "naruch_skip": {"rar": "– Ходи быстрее.", "player": "<b>Вы не можете пошевелить руками</b>"},
+    "rar_take_gun": {"rar": "<b>Рар берет ружье</b>", "player": "<b>Рар берет ружье</b>"},
+    "tabletki_good": {"rar": "– Так то лучше.", "player": "<b>Вы чувствуете себя лучше</b>"},
+    "tabletki_bad": {"rar": "– Ух...", "player": "<b>Вам поплохело</b>"},
+    "telefon_think": {"rar": "– Ага, хм...", "player": "– Ага, хм..."},
+    "lupa_use": {"rar": "<b>Рар смотрит следующий патрон</b>", "player": "<b>Вы заглядываете в ружье</b>"},
+    "sigara_use": {"rar": "<b>Рар затягивается сигаретой</b>", "player": "<b>Вам чуть лучше</b>"},
+    "bpatron_use": {"rar": "<b>Рар вставляет боевой патрон</b>", "player": "<b>Вы вставляете боевой патрон</b>"},
+    "nasadka_use": {"rar": "– Сейчас будет весело.", "player": "<b>Насадка на ружье надета</b>"},
+    "zerkalo_use": {"rar": "– Зеркало защитит меня.", "player": "<b>Вы готовите зеркало</b>"},
+    "pila_use": {"rar": "<b>Рар срезает ствол</b>", "player": "<b>Вы срезаете ствол</b>"},
+    "adrenalin_take": {"rar": "– Возьму {предмет}.", "player": "<b>Вы берете {предмет}</b>"},
+    "aim_player": {"rar": "<b>Ствол направлен на вас</b>", "player": "<b>Ствол направлен на вас</b>"},
+    "aim_self": {"rar": "<b>Рар направляет ствол на себя</b>", "player": "<b>Рар направляет ствол на себя</b>"},
+    "player_skip": {"rar": "<b>Вы не можете пошевелить руками</b>", "player": "<b>Вы не можете пошевелить руками</b>"},
+    "low_hp_both": {"rar": "– Сейчас осторожнее.", "player": "– Сейчас осторожнее."},
+    "low_hp_rar": {"rar": "– Гх...", "player": "– Гх..."},
+    "zerkalo_crack": {"rar": "<b>Зеркало треснуло отразив урон</b>", "player": "<b>Зеркало треснуло отразив урон</b>"},
+    "zerkalo_break": {"rar": "<b>Зеркало разлетелось отразив урон</b>", "player": "<b>Зеркало разлетелось отразив урон</b>"},
+    "hit": {"rar": "<b>Попадание.</b>", "player": "<b>Попадание.</b>"},
+    "blank": {"rar": "<b>Щелчок. Пусто.</b>", "player": "<b>Щелчок. Пусто.</b>"},
+    "nasadka_burst": {"rar": "<b>Разрыв насадки</b>", "player": "<b>Разрыв насадки</b>"},
+    "reloading": {"rar": "<i>Рар перезаряжает ружьё...</i>", "player": "<i>Рар перезаряжает ружьё...</i>"},
+    "reload_info": {"rar": "– {N} холостых, {M} боевых", "player": "– {N} холостых, {M} боевых"},
+    "items_for_you": {"rar": "– Предметы тебе.", "player": "– Предметы тебе."},
+    "items_for_me": {"rar": "– И мне.", "player": "– И мне."},
+    "lupa_result": {"rar": "<b>Следующий: {тип}</b>", "player": "<b>Следующий: {тип}</b>"},
+    "pila_result": {"rar": "<b>Ствол срезан</b>", "player": "<b>Ствол срезан</b>"},
+    "sigara_puff": {"rar": "– Перекур?", "player": "– Перекур?"},
+    "telefon_anim": {"rar": "– {N} патрон... будет... {тип}...", "player": "– {N} патрон... будет... {тип}..."},
+    "telefon_dead": {"rar": "<b>Телефон разряжен</b>", "player": "<b>Телефон разряжен</b>"},
+    "empty": {"rar": "– Пусто...", "player": "– Пусто..."},
+    "rar_no_items": {"rar": "<b>У Рар нет предметов</b>", "player": "<b>У Рар нет предметов</b>"},
+    # Анимации использования предметов (игрок и Rar)
+    "use_naruch": {"rar": "<b>Рар использует наручники</b>", "player": "<b>Вы используете наручники</b>"},
+    "use_sigara": {"rar": "<b>Рар использует сигарету</b>", "player": "<b>Вы используете сигарету</b>"},
+    "use_tabletki": {"rar": "<b>Рар использует таблетки</b>", "player": "<b>Вы используете таблетки</b>"},
+    "use_telefon": {"rar": "<b>Рар использует телефон</b>", "player": "<b>Вы используете телефон</b>"},
+    "use_bpatron": {"rar": "<b>Рар использует боевой патрон</b>", "player": "<b>Вы используете боевой патрон</b>"},
+    "use_nasadka": {"rar": "<b>Рар использует насадку</b>", "player": "<b>Вы используете насадку</b>"},
+    "use_zerkalo": {"rar": "<b>Рар использует зеркало</b>", "player": "<b>Вы используете зеркало</b>"},
+    "use_pila": {"rar": "<b>Рар использует пилу</b>", "player": "<b>Вы используете пилу</b>"},
+    "use_lupa": {"rar": "<b>Рар использует лупу</b>", "player": "<b>Вы используете лупу</b>"},
+    "use_adrenalin": {"rar": "<b>Рар использует адреналин</b>", "player": "<b>Вы используете адреналин</b>"},
+    # Эффекты адреналина (игрок крадёт у Rar)
+    "adr_take_naruch": {"rar": "<b>Вы берете наручники</b>\n<b>Rar пропустит ход.</b>", "player": "<b>Вы берете наручники</b>\n<b>Rar пропустит ход.</b>"},
+    "adr_take_sigara_good": {"rar": "<b>Вы берете сигарету</b>\n<b>Вы чувствуете себя чуть лучше</b>", "player": "<b>Вы берете сигарету</b>\n<b>Вы чувствуете себя чуть лучше</b>"},
+    "adr_take_sigara_max": {"rar": "<b>Вы берете сигарету</b>\n– Сильная страсть к сигаретам?", "player": "<b>Вы берете сигарету</b>\n– Сильная страсть к сигаретам?"},
+    "adr_take_tabletki_good": {"rar": "<b>Вы берете таблетки</b>\n<b>Вы чувствуете себя на много лучше</b>", "player": "<b>Вы берете таблетки</b>\n<b>Вы чувствуете себя на много лучше</b>"},
+    "adr_take_tabletki_bad": {"rar": "<b>Вы берете таблетки</b>\n<b>Вам очень дурно</b>", "player": "<b>Вы берете таблетки</b>\n<b>Вам очень дурно</b>"},
+    "adr_take_telefon": {"rar": "<b>Вы берете телефон</b>\n– {N} патрон... {тип}.", "player": "<b>Вы берете телефон</b>\n– {N} патрон... {тип}."},
+    "adr_take_telefon_empty": {"rar": "<b>Вы берете телефон</b>\n– Пусто.", "player": "<b>Вы берете телефон</b>\n– Пусто."},
+    "adr_take_bpatron": {"rar": "<b>Вы берете боевой патрон</b>\n<b>Вы вставляете патрон в ствол.</b>", "player": "<b>Вы берете боевой патрон</b>\n<b>Вы вставляете патрон в ствол.</b>"},
+    "adr_take_nasadka": {"rar": "<b>Вы берете насадку</b>\n<b>Насадка на стволе</b>", "player": "<b>Вы берете насадку</b>\n<b>Насадка на стволе</b>"},
+    "adr_take_zerkalo": {"rar": "<b>Вы берете зеркало</b>\n<b>Ставлю.</b>", "player": "<b>Вы берете зеркало</b>\n<b>Ставлю.</b>"},
+    "adr_take_adrenalin": {"rar": "<b>Вы берете адреналин</b>\n<b>Сердце бешено бьется</b>\n<b>Вы задыхаетесь</b>", "player": "<b>Вы берете адреналин</b>\n<b>Сердце бешено бьется</b>\n<b>Вы задыхаетесь</b>"},
+}
+
+RL_START_DIALOGS = {
+    "reload_start": "– Вставляю патроны.",
+    "round2_items": "– Два предмета тебе, два мне.",
+    "round2_finish": "– Да будет нам мила Госпожа Удача.",
+    "box_appears": "Появляется ящик.",
+    "round3_items": "– Предметы тебе. Предметы мне.",
+    "offer_round2": "– Второй раунд?",
+    "offer_round3": "– Продолжим?",
+    "timeout": "<b>Похоже игра подошла к концу</b>",
+    "pick_item": "Выбери предмет:",
+}
+
+RL_FINISH_DIALOGS = {
+    "player_win": "<b><i>Победа за тобой</i></b>",
+    "rar_win": "<b><i>Победа за Рар</i></b>",
+}
+
+RL_BUTTONS = {
+    "close": "Уйти",
+    "next": "Далее",
+    "round2": "2 Раунд",
+    "round3": "3 Раунд",
+    "no": '"Нет"',
+    "shoot_self": "Выстрел в себя",
+    "shoot_rar": "Выстрел в Rar",
+    "rar_turn": "Ход Rar...",
+    "cancel": "Отмена",
+}
+
+SLEUTH_DIALOGS = {
+    "done_chat": "✨Слежка завершена! {цель} набрал(а) {N}/{M}\nНаблюдатель: {админ}",
+    "done_deadline": "✨Слежка завершена! {цель} набрал(а) {N}/{M} за {срок}\nНаблюдатель: {админ}",
+    "kicked": "Исключён",
+    "banned": "Забанен",
+    "no_kick_rights": "Не смогла кикнуть (мало прав)",
+    "no_ban_rights": "Не смогла забанить (мало прав)",
+    "started": "✨Слежка начата! Цель: {цель}\nНорма: {N} за {срок}",
+    "cancelled": "✨Слежка снята. Цель: {цель}",
+    "list_header": "✨Активные слежки:",
+    "list_item": "{цель} – {N}/{M}{action}, осталось {время}",
+    "no_active_on_user": "Нет активной слежки на этого пользователя!",
+    "protect_creator": "Вы что!!! Нельзя вешать слежку на создателя чата!!!",
+    "protect_senior": "Нельзя вешать слежку на старшего админа!!!",
+    "no_rights_action": "Бан/кик слежку может вешать только старший админ или создатель!!!",
+    "no_duration": "Укажи срок, например: 2д 12ч",
+    "bad_duration": "Не поняла срок...",
+    "no_count": "Укажи норму, например: 150",
+    "no_active": "Активных слежек нет!",
+}
+
+ADMIN_DIALOGS = {
+    "no_rights": "Не дорос еще! Недостаточно прав!!!",
+    "group_only_long": "Эта команда работает только в группах",
+    "group_only_short": "Только в группах",
+    "kall_on": "Калл включён!",
+    "kall_off": "Калл выключен!",
+    "kall_disabled": "Калл отключён!",
+    "kall_header": "Минуточку внимания!",
+    "no_active_members": "Нет активных",
+    "empty_list": "Список пуст",
+    "already_admin": "Он уже админ, используй ++.",
+    "not_admin": "Он не админ, используй +.",
+    "already_senior": "Уже старший!",
+    "already_low": "Уже мл, используй --",
+    "protect_creator": "Нельзя трогать создателя чата!!!",
+    "protect_senior": "Нельзя трогать старшего админа!!!",
+    "self": "Себя нельзя!!!",
+    "is_creator": "{имя} – создатель чата",
+    "rank_line": "{имя} – {ранг}",
+    "sync_hint": "(в Telegram админ, но в БД нет – напиши Рар админ + чтобы синхронизировать)",
+    "admins_header": "Список админов Rar:",
+    "creator_line": "{имя} – создатель",
+    "admins_empty": "Пока никого",
+    "no_promote_rights": "У меня нет права назначать админов! Выдайте пожалуйста!!!",
+    "promote_check_fail": "Не смогла проверить права...",
+    "promote_fail": "Не смогла изменить права: {ошибка}",
+    "rank_changed": "{имя} теперь {ранг}",
+    "cant_ban_creator": "Нельзя банить создателя!!!",
+    "banned": "{имя} забанен",
+    "banned_reason": "{имя} забанен. Причина: {причина}",
+    "no_ban_rights": "У меня недостаточно прав для бана, выдайте пожалуйста!!!",
+    "unbanned": "{имя} разбанен",
+    "unban_fail": "Не получилось разбанить",
+    "cant_kick_creator": "Нельзя кикать создателя!!!",
+    "kicked": "{имя} кикнут",
+    "kick_fail": "Не получилось кикнуть",
+    "muted": "{имя} замучен на {срок}",
+    "mute_fail": "Не получилось замутить",
+    "unmuted": "{имя} размучен",
+    "unmute_fail": "Не получилось размутить",
+    "no_target": "Ответь или укажи @username",
+    "no_target_msg": "Не нашла, ответь на сообщение или укажи @username",
+    "no_target_reply": "Ответь на сообщение или укажи @username",
+}
+
+MUSIC_DIALOGS = {
+    "pl_not_found": "Не нашла плейлист {имя}, можешь создать такой: Рар создай плейлист {имя}",
+    "pl_not_yours": "Это не твой плейлист! Нельзя так делать!!!",
+    "track_already": "Вообще то этот трек уже в плейлисте",
+    "pl_limit": "Максимум {N} песен!",
+    "pl_added": "Добавила в плейлист {имя}!",
+    "something_wrong": "Что-то пошло не так...",
+    "attach_audio_pl": 'Прикрепи аудио или ответь "Рар добавь в {имя}"',
+    "attach_audio": 'Прикрепи аудио или ответь "Рар добавь"',
+    "track_saved": "Этот трек уже сохранён: {имя}",
+    "track_added": "Занесла трек в коллекцию.",
+    "track_db_name": "Имя в базе: {имя}",
+    "name_exists": "Такое название уже есть!",
+    "error": "Ошибка: {ошибка}",
+    "pl_created": "Плейлист {имя} создан!",
+    "no_playlists": "Нет плейлистов, создай: Рар создай плейлист Супер мега клевые кавайные няшные золото метало серебрянные песенки с бешеным темпом",
+    "your_playlists": "Твои плейлисты:",
+    "playlist_line": "{имя} – {N} треков",
+    "no_pl_with_tracks": "Нет плейлистов с треками",
+    "not_found": "Не нашла {имя}",
+    "pl_empty": "Плейлист пуст!",
+    "top_empty": "Топ пуст!",
+    "top_pl_header": "Топ 10 плейлистов",
+    "top_pl_line": "{N}. {имя} ({поиски})",
+    "not_yours_strict": "Да что ты себе позволяешь?! Не твой плейлист!!!!!!",
+    "pl_empty_short": "Плейлист пуст",
+    "track_not_in_pl": "Не нашла {запрос} в {плейлист}",
+    "track_removed": "Убрала {трек} из {плейлист}",
+    "pl_deleted": "Плейлист {имя} удалён",
+    "renamed": "Переименовала: {старое} – {новое}",
+    "creator_only": "Только для создателя!",
+    "reply_audio": "Ответь на аудио",
+    "track_deleted": "Трек удалён: {имя}",
+    "not_found_short": "Не найден",
+    "top_tracks_header": "Топ 10 треков",
+    "top_track_line": "{N}. {трек} ({прослушивания})",
+    "searching": "Ищу...",
+    "found": "Нашла: {трек}",
+    "query": "Запрос: {запрос}",
+    "not_found_song": "Не нашла такую песню",
+    "collection_empty": "Коллекция пуста!",
+    "here_song": "Вот ваша песня.",
+    "broken_header": "Проблемные ({N}):",
+    "broken_line": "№{N}: {трек}",
+    "broken_more": "...и ещё {N}",
+    "no_broken": "Проблемных треков нет!",
+}
+
+SETTINGS_DIALOGS = {
+    "greet_on": "Приветствие включено!",
+    "greet_off": "Приветствие выключено!",
+    "farewell_on": "Прощание включено!",
+    "farewell_off": "Прощание выключено!",
+    "write_text": "Напиши текст!",
+    "greet_updated": "Обновила приветствие:",
+    "farewell_updated": "Обновила прощание:",
+    "start_title": "<b>Привет!!! Я Рар – ваш универсальный помощник</b>",
+    "start_body": "В основном я работаю в чатах: храню коллекцию музыки, играю в разные игры с пользователями и помогаю с администрированием!!!",
+    "start_hint": "Чтобы узнать, на что я способна, напишите в чате: Рар команды",
+    "join_no_admin": "Здравствуйте! Меня зовут Рар!",
+    "join_no_admin_hint": "Для работы дайте мне права админа, пожалуйста! (Не забудьте дать мне права на назначение админов!)",
+    "join_commands": "Мои команды: Рар команды",
+    "thanks": "Спасибо, теперь могу работать✨",
+    "lost_admin": "Эй! Верните мне админа! Я же так сломаться могу!!!",
+    "bot_alive": "Бот Rar активен!",
+    "timeout_game": "<b>Слишком долго, дилер ушел</b>",
+}
+
+
+def rl_dlg(key, actor="player"):
+    """Возвращает фразу из RL_DIALOGS по ключу и актору."""
+    entry = RL_DIALOGS.get(key, {})
+    return entry.get(actor, entry.get("player", ""))
+
+
+def rl_fmt(key, actor="player", **kwargs):
+    """Возвращает отформатированную фразу."""
+    text = rl_dlg(key, actor)
+    try:
+        return text.format(**kwargs)
+    except Exception:
+        return text
+
 
 _creator_cache = {}
 CREATOR_CACHE_TTL = 3600
@@ -238,13 +479,13 @@ async def get_chat_creator(chat_id, context):
 
 async def check_user_rank(update, context, chat_id, user_id, required_rank):
     if chat_id >= 0 and required_rank > RANK_NONE:
-        await update.message.reply_text("Эта команда работает только в группах"); return False
+        await update.message.reply_text(ADMIN_DIALOGS["group_only_long"]); return False
     if chat_id >= 0: return True
     creator = await get_chat_creator(chat_id, context)
     if creator and user_id == creator: return True
     rank = get_admin_rank(chat_id, user_id)
     if rank < required_rank:
-        await update.message.reply_text("Не дорос еще! Недостаточно прав!!!"); return False
+        await update.message.reply_text(ADMIN_DIALOGS["no_rights"]); return False
     return True
 
 
@@ -253,7 +494,11 @@ async def check_user_rank(update, context, chat_id, user_id, required_rank):
 async def duel_start(update, context, hard=False):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    gid = str(int(time.time() * 1000))
+    for existing_game in duel_games.values():
+        if existing_game["chat_id"] == chat_id and existing_game["user_id"] == user_id and existing_game.get("active"):
+            await update.message.reply_text("У тебя уже идёт дуэль.")
+            return
+    gid = uuid.uuid4().hex[:16]
     rounds = 10 if hard else 5
     timeout = 3 if hard else 4
     game = {"gid": gid, "chat_id": chat_id, "user_id": user_id, "round": 0, "max_rounds": rounds, "timeout": timeout, "active": True, "state": "intro", "last_action": time.time(), "hard": hard, "msg_id": None, "expected": None}
@@ -322,7 +567,6 @@ def rl_make_magazine(count):
 
 
 def rl_generate_items(pool, count, existing=None):
-    """Генерирует предметы с антиповтором (макс 2 одинаковых в инвентаре)."""
     result = []
     current = list(existing) if existing else []
     for _ in range(count):
@@ -374,38 +618,43 @@ def rl_keyboard(game):
     if game.get("finished"): return None
     if game["turn"] == "player":
         rows.append([
-            InlineKeyboardButton("Выстрел в себя", callback_data=f"rl_shoot_self_{game['gid']}"),
-            InlineKeyboardButton("Выстрел в Rar", callback_data=f"rl_shoot_rar_{game['gid']}"),
+            InlineKeyboardButton(RL_BUTTONS["shoot_self"], callback_data=f"rl_shoot_self_{game['gid']}"),
+            InlineKeyboardButton(RL_BUTTONS["shoot_rar"], callback_data=f"rl_shoot_rar_{game['gid']}"),
         ])
         if game["round"] >= 2 and game["player_items"]:
             item_buttons = [InlineKeyboardButton(ITEM_NAMES[it], callback_data=f"rl_item_{it}_{game['gid']}") for it in game["player_items"]]
             rows.append(item_buttons)
     elif game["turn"] == "rar":
-        rows.append([InlineKeyboardButton("Ход Rar...", callback_data=f"rl_noop_{game['gid']}")])
+        rows.append([InlineKeyboardButton(RL_BUTTONS["rar_turn"], callback_data=f"rl_noop_{game['gid']}")])
     return InlineKeyboardMarkup(rows) if rows else None
 
 
 async def rl_edit(context, game):
     try:
+        game["last_action"] = time.time()
         await context.bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"], text=rl_render(game), parse_mode="HTML", reply_markup=rl_keyboard(game))
     except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" in err:
+            return
         print(f"[RL EDIT ERROR] {e}")
 
 
 async def rl_finish(context, game, winner):
     game["finished"] = True
     game["turn"] = "finished"
-    game["status"] = "Победа за тобой." if winner == "player" else "Победа за мной."
-    game["log"] = ""
+    game["status"] = ""
     if winner == "player":
-        if game["round"] == 1:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Закрыть", callback_data=f"rl_close_{game['gid']}"), InlineKeyboardButton("Далее", callback_data=f"rl_offer2_{game['gid']}")]])
-        elif game["round"] == 2:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Закрыть", callback_data=f"rl_close_{game['gid']}"), InlineKeyboardButton("Далее", callback_data=f"rl_offer3_{game['gid']}")]])
-        else:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Закрыть", callback_data=f"rl_close_{game['gid']}")]])
+        game["log"] = RL_FINISH_DIALOGS["player_win"]
     else:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Закрыть", callback_data=f"rl_close_{game['gid']}")]])
+        game["log"] = RL_FINISH_DIALOGS["rar_win"]
+    if winner == "player" and game["round"] < 3:
+        next_round = game["round"] + 1
+        rows = []
+        rows.append([InlineKeyboardButton(RL_BUTTONS["next"], callback_data=f"rl_offer{next_round}_{game['gid']}"), InlineKeyboardButton(RL_BUTTONS["close"], callback_data=f"rl_close_{game['gid']}")])
+        kb = InlineKeyboardMarkup(rows)
+    else:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(RL_BUTTONS["close"], callback_data=f"rl_close_{game['gid']}")]])
     try:
         await context.bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"], text=rl_render(game), parse_mode="HTML", reply_markup=kb)
     except Exception: pass
@@ -414,9 +663,9 @@ async def rl_finish(context, game, winner):
 async def rl_offer_round2(context, gid, chat_id):
     game = roulette_games.get(gid)
     if not game: return
-    game["log"] = "– Сыграем второй раунд?"
+    game["log"] = RL_START_DIALOGS["offer_round2"]
     game["status"] = ""
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("2 Раунд", callback_data=f"rl_r2_{gid}"), InlineKeyboardButton('"Нет"', callback_data=f"rl_close_{gid}")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(RL_BUTTONS["round2"], callback_data=f"rl_r2_{gid}"), InlineKeyboardButton(RL_BUTTONS["no"], callback_data=f"rl_close_{gid}")]])
     try:
         await context.bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"], text=rl_render(game), parse_mode="HTML", reply_markup=kb)
     except Exception: pass
@@ -425,16 +674,15 @@ async def rl_offer_round2(context, gid, chat_id):
 async def rl_offer_round3(context, gid, chat_id):
     game = roulette_games.get(gid)
     if not game: return
-    game["log"] = "– Сыграем последний раунд?"
+    game["log"] = RL_START_DIALOGS["offer_round3"]
     game["status"] = ""
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("3 Раунд", callback_data=f"rl_r3_{gid}"), InlineKeyboardButton('"Нет"', callback_data=f"rl_close_{gid}")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(RL_BUTTONS["round3"], callback_data=f"rl_r3_{gid}"), InlineKeyboardButton(RL_BUTTONS["no"], callback_data=f"rl_close_{gid}")]])
     try:
         await context.bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"], text=rl_render(game), parse_mode="HTML", reply_markup=kb)
     except Exception: pass
 
 
 async def rl_give_items_with_animation(context, game, who, items):
-    """Выдаёт предметы с анимацией по одному."""
     target = game["player_items"] if who == "player" else game["rar_items"]
     for it in items:
         target.append(it)
@@ -443,16 +691,15 @@ async def rl_give_items_with_animation(context, game, who, items):
 
 
 async def rl_reload_with_items(context, game, bonus):
-    """Перезарядка + добор предметов до лимита."""
     count = random.randint(3, 8)
     mag, bullets, blanks = rl_make_magazine(count)
     game["magazine"] = mag
     game["shot_idx"] = 0
-    game["status"] = "Rar перезаряжает ружьё..."
+    game["status"] = RL_START_DIALOGS["reload_start"]
     game["log"] = ""
     await rl_edit(context, game)
     await asyncio.sleep(3)
-    game["log"] = f"– {blanks} холостых, {bullets} боевых"
+    game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
     await rl_edit(context, game)
     await asyncio.sleep(2)
 
@@ -469,13 +716,13 @@ async def rl_reload_with_items(context, game, bonus):
     r_need = min(bonus, max(0, limit - len(game["rar_items"])))
 
     if p_need > 0:
-        game["log"] = "– Тебе ещё предметы."
+        game["log"] = RL_DIALOGS["items_for_you"]["player"]
         await rl_edit(context, game); await asyncio.sleep(1)
         p_items = rl_generate_items(pool, p_need, existing=game["player_items"])
         await rl_give_items_with_animation(context, game, "player", p_items)
 
     if r_need > 0:
-        game["log"] = "– И мне."
+        game["log"] = RL_DIALOGS["items_for_me"]["player"]
         await rl_edit(context, game); await asyncio.sleep(1)
         r_items = rl_generate_items(pool, r_need, existing=game["rar_items"])
         await rl_give_items_with_animation(context, game, "rar", r_items)
@@ -492,14 +739,18 @@ async def rl_reload(context, game):
 async def rl_start(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    gid = str(int(time.time() * 1000))
+    for existing_game in roulette_games.values():
+        if existing_game["chat_id"] == chat_id and existing_game["player_id"] == user_id and not existing_game.get("finished"):
+            await update.message.reply_text("У тебя уже идёт игра. Закончи её, прежде чем начать новую.")
+            return
+    gid = uuid.uuid4().hex[:16]
     cfg = rl_round_config(1)
     count = random.randint(3, 8)
     mag, bullets, blanks = rl_make_magazine(count)
     game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
     msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
     game["msg_id"] = msg.message_id
-    game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
+    game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
     await rl_edit(context, game)
     roulette_games[gid] = game
 
@@ -515,17 +766,17 @@ async def rl_round2_start(context, gid, chat_id):
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
     game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
     roulette_games[gid] = game
-    game["log"] = "<b>Появляется ящик.</b>"
+    game["log"] = RL_START_DIALOGS["box_appears"]
     await rl_edit(context, game); await asyncio.sleep(1)
-    game["log"] = "– Два предмета тебе, два мне."
+    game["log"] = RL_START_DIALOGS["round2_items"]
     await rl_edit(context, game); await asyncio.sleep(1)
     game["player_items"].append(p_items[0]); await rl_edit(context, game); await asyncio.sleep(1)
     game["player_items"].append(p_items[1]); await rl_edit(context, game); await asyncio.sleep(1)
     game["rar_items"].append(r_items[0]); await rl_edit(context, game); await asyncio.sleep(1)
     game["rar_items"].append(r_items[1]); await rl_edit(context, game); await asyncio.sleep(1)
-    game["log"] = "– Да будет нам мила Госпожа Удача."
+    game["log"] = RL_START_DIALOGS["round2_finish"]
     await rl_edit(context, game); await asyncio.sleep(4)
-    game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
+    game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
     game["status"] = "Твой ход"
     await rl_edit(context, game)
 
@@ -544,23 +795,36 @@ async def rl_round3_start(context, gid, chat_id):
     start_phrase = random.choice(ROUND3_START_PHRASES)
     game["log"] = f"– {start_phrase}"
     await rl_edit(context, game); await asyncio.sleep(3)
-    game["log"] = "<b>Появляется ящик.</b>"
+    game["log"] = RL_START_DIALOGS["box_appears"]
     await rl_edit(context, game); await asyncio.sleep(1)
-    game["log"] = "– Четыре предмета тебе, четыре мне."
+    game["log"] = RL_START_DIALOGS["round3_items"]
     await rl_edit(context, game); await asyncio.sleep(1)
     for i in range(4):
         game["player_items"].append(p_items[i]); await rl_edit(context, game); await asyncio.sleep(1)
     for i in range(4):
         game["rar_items"].append(r_items[i]); await rl_edit(context, game); await asyncio.sleep(1)
-    game["log"] = f"– Вставляю патроны.\n– {blanks} холостых, {bullets} боевых"
+    game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
     game["status"] = "Твой ход"
     await rl_edit(context, game)
 
 async def rl_rar_turn(context, game):
+    try:
+        await _rl_rar_turn_inner(context, game)
+    except Exception as e:
+        print(f"[RL RAR TURN FATAL] {e}")
+        traceback.print_exc()
+        if not game.get("finished"):
+            game["turn"] = "player"
+            game["status"] = "Твой ход"
+            game["log"] = "<b>Rar запнулась. Ход снова твой.</b>"
+            await rl_edit(context, game)
+
+
+async def _rl_rar_turn_inner(context, game):
     if game.get("finished"): return
     if game.get("rar_skip"):
         game["rar_skip"] = False
-        game["log"] = "– Наручники. Ход пропущен."
+        game["log"] = rl_dlg("naruch_skip", "rar")
         game["turn"] = "player"
         game["status"] = "Твой ход"
         await rl_edit(context, game)
@@ -569,7 +833,7 @@ async def rl_rar_turn(context, game):
 
     await asyncio.sleep(2)
     game["turn"] = "rar"
-    game["log"] = "– Ход мой."
+    game["log"] = rl_dlg("rar_take_gun", "rar")
     game["status"] = "Ход Rar"
     await rl_edit(context, game)
     await asyncio.sleep(2)
@@ -584,12 +848,14 @@ async def rl_rar_turn(context, game):
             should_use = (hp <= game["rar_max_hp"] - 2) or (hp == 1 and len(game["rar_items"]) == 1)
             if should_use:
                 game["rar_items"].remove("tabletki")
+                game["log"] = rl_dlg("use_tabletki", "rar")
+                await rl_edit(context, game); await asyncio.sleep(1)
                 if random.randint(1, 2) == 1:
                     game["rar_hp"] = min(game["rar_max_hp"], game["rar_hp"] + 2)
-                    game["log"] = "– Таблетки. Полегчало."
+                    game["log"] = rl_dlg("tabletki_good", "rar")
                 else:
                     game["rar_hp"] -= 1
-                    game["log"] = "– Таблетки. Плохо."
+                    game["log"] = rl_dlg("tabletki_bad", "rar")
                 game["status"] = "Ход Rar"
                 await rl_edit(context, game); await asyncio.sleep(2)
                 if game["rar_hp"] <= 0:
@@ -597,7 +863,9 @@ async def rl_rar_turn(context, game):
 
         if "telefon" in game["rar_items"]:
             game["rar_items"].remove("telefon")
-            game["log"] = "– Ага, хм..."
+            game["log"] = rl_dlg("use_telefon", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
+            game["log"] = rl_dlg("telefon_think", "rar")
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(3)
             remaining_list = game["magazine"][game["shot_idx"]:]
@@ -607,44 +875,56 @@ async def rl_rar_turn(context, game):
 
         if "lupa" in game["rar_items"] and not game.get("rar_knows"):
             game["rar_items"].remove("lupa")
+            game["log"] = rl_dlg("use_lupa", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
             game["rar_knows"] = game["magazine"][game["shot_idx"]]
-            game["log"] = "– Смотрю в ствол."
+            game["log"] = rl_dlg("lupa_use", "rar")
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
         if "sigara" in game["rar_items"] and game["rar_hp"] < game["rar_max_hp"]:
             game["rar_items"].remove("sigara")
+            game["log"] = rl_dlg("use_sigara", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
             game["rar_hp"] += 1
-            game["log"] = "– Затянусь."
+            game["log"] = rl_dlg("sigara_use", "rar")
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
         if "bpatron" in game["rar_items"]:
             game["rar_items"].remove("bpatron")
+            game["log"] = rl_dlg("use_bpatron", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
             game["magazine"].insert(game["shot_idx"], "B")
             game["rar_knows"] = "B"
-            game["log"] = "– Вставляю боевой."
+            game["log"] = rl_dlg("bpatron_use", "rar")
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
         if "nasadka" in game["rar_items"] and not game.get("nasadka_active"):
             game["rar_items"].remove("nasadka")
+            game["log"] = rl_dlg("use_nasadka", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
             game["nasadka_active"] = True
-            game["log"] = "– Насадка на ствол."
+            game["log"] = rl_dlg("nasadka_use", "rar")
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
         if "zerkalo" in game["rar_items"] and not game.get("rar_zerkalo"):
             game["rar_items"].remove("zerkalo")
+            game["log"] = rl_dlg("use_zerkalo", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
             game["rar_zerkalo"] = True
-            game["log"] = "– Ставлю зеркало."
+            game["log"] = rl_dlg("zerkalo_use", "rar")
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
         if "pila" in game["rar_items"] and not game.get("pila_active") and game.get("rar_knows") == "B":
             game["rar_items"].remove("pila")
+            game["log"] = rl_dlg("use_pila", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
             game["pila_active"] = True
-            game["log"] = "– Срезаю ствол."
+            game["log"] = rl_dlg("pila_use", "rar")
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
@@ -654,9 +934,11 @@ async def rl_rar_turn(context, game):
                 stolen = random.choice(stealable)
                 game["player_items"].remove(stolen)
                 game["rar_items"].remove("adrenalin")
-                game["log"] = f"– Адреналин. Забираю {ITEM_NAMES[stolen]}."
+                game["log"] = rl_dlg("use_adrenalin", "rar")
+                await rl_edit(context, game); await asyncio.sleep(1)
+                game["log"] = rl_fmt("adrenalin_take", "rar", предмет=ITEM_NAMES[stolen])
                 game["status"] = "Ход Rar"
-                await rl_edit(context, game); await asyncio.sleep(2)
+                await rl_edit(context, game); await asyncio.sleep(1)
                 if stolen == "lupa" and not game.get("rar_knows"):
                     game["rar_knows"] = game["magazine"][game["shot_idx"]]
                 elif stolen == "sigara" and game["rar_hp"] < game["rar_max_hp"]:
@@ -682,11 +964,14 @@ async def rl_rar_turn(context, game):
                     if remaining_list:
                         idx = random.randint(0, len(remaining_list) - 1)
                         game["rar_knows"] = remaining_list[idx]
+                await rl_edit(context, game); await asyncio.sleep(1)
 
         if "naruch" in game["rar_items"]:
             game["rar_items"].remove("naruch")
+            game["log"] = rl_dlg("use_naruch", "rar")
+            await rl_edit(context, game); await asyncio.sleep(1)
             game["player_skip"] = True
-            game["log"] = "– Наручники на тебя."
+            game["log"] = "<b>Rar пропустит ход.</b>"
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
@@ -705,7 +990,7 @@ async def rl_rar_turn(context, game):
             else:
                 target = "player" if random.randint(1, 100) <= 70 else "rar"
 
-    game["log"] = "– Стреляю в тебя." if target == "player" else "– Стреляю в себя."
+    game["log"] = rl_dlg("aim_player", "rar") if target == "player" else rl_dlg("aim_self", "rar")
     game["status"] = "Ход Rar"
     await rl_edit(context, game)
     await asyncio.sleep(2)
@@ -720,36 +1005,35 @@ async def rl_rar_turn(context, game):
                 game["player_zerkalo"] = False
                 if dmg == 1:
                     game["rar_hp"] -= 1
-                    game["log"] = "<b>Зеркало треснуло. Урон в Rar.</b>"
+                    game["log"] = rl_dlg("zerkalo_crack", "rar")
                 else:
                     game["player_hp"] -= 1
                     game["rar_hp"] -= 2
-                    game["log"] = "<b>Зеркало разлетелось. 1 тебе, 2 Rar.</b>"
+                    game["log"] = rl_dlg("zerkalo_break", "rar")
             else:
                 game["player_hp"] -= dmg
-                game["log"] = "<b>Попадание.</b>"
+                game["log"] = rl_dlg("hit", "rar")
         else:
             if game.get("rar_zerkalo"):
                 game["rar_zerkalo"] = False
                 if dmg == 1:
                     game["player_hp"] -= 1
-                    game["log"] = "<b>Зеркало Rar треснуло. Урон в тебя.</b>"
+                    game["log"] = rl_dlg("zerkalo_crack", "rar")
                 else:
                     game["rar_hp"] -= 1
                     game["player_hp"] -= 2
-                    game["log"] = "<b>Зеркало Rar разлетелось. 1 ей, 2 тебе.</b>"
+                    game["log"] = rl_dlg("zerkalo_break", "rar")
             else:
                 game["rar_hp"] -= dmg
-                game["log"] = "<b>Попадание.</b>"
-        # Насадка остаётся. Пила сбрасывается.
+                game["log"] = rl_dlg("hit", "rar")
         if game.get("pila_active"):
             game["pila_active"] = False
     else:
-        game["log"] = "<b>Щелчок. Пусто.</b>"
+        game["log"] = rl_dlg("blank", "rar")
         if game.get("nasadka_active"):
             game["nasadka_active"] = False
             game["rar_hp"] -= 1
-            game["log"] = "<b>Разрыв насадки.</b>"
+            game["log"] = rl_dlg("nasadka_burst", "rar")
         if game.get("pila_active"):
             game["pila_active"] = False
 
@@ -772,7 +1056,7 @@ async def rl_rar_turn(context, game):
 
     if game.get("player_skip"):
         game["player_skip"] = False
-        game["log"] = "– Твой ход пропущен."
+        game["log"] = rl_dlg("player_skip", "player")
         game["status"] = "Ход Rar"
         await rl_edit(context, game); await asyncio.sleep(2)
         asyncio.create_task(rl_rar_turn(context, game)); return
@@ -781,38 +1065,39 @@ async def rl_rar_turn(context, game):
     if not reloaded: game["log"] = ""
     game["status"] = "Твой ход"
     if game["player_hp"] == 1 and game["rar_hp"] == 1 and not reloaded:
-        game["log"] = "– Сейчас осторожнее."
+        game["log"] = rl_dlg("low_hp_both", "player")
     elif game["rar_hp"] == 1 and not reloaded:
-        game["log"] = "– Гх..."
+        game["log"] = rl_dlg("low_hp_rar", "player")
     await rl_edit(context, game)
 
 
 # ==================== ОБРАБОТКА КНОПОК РУЛЕТКИ ====================
 
 async def rl_apply_stolen_item(context, game, item):
+    """Игрок украл предмет у Rar через адреналин — применяем эффект."""
     if item == "lupa":
         game["player_knows"] = game["magazine"][game["shot_idx"]]
         label = "боевой" if game["player_knows"] == "B" else "холостой"
-        game["log"] = f"– Адреналин. Забираю лупу. Следующий: {label}."
+        game["log"] = rl_fmt("lupa_result", "player", тип=label)
     elif item == "pila":
         game["pila_active"] = True
-        game["log"] = "– Адреналин. Забираю пилу. Ствол срезан."
+        game["log"] = rl_dlg("pila_result", "player")
     elif item == "naruch":
         game["rar_skip"] = True
-        game["log"] = "– Адреналин. Забираю наручники. Rar пропустит ход."
+        game["log"] = rl_dlg("adr_take_naruch", "player")
     elif item == "sigara":
         if game["player_hp"] < game["player_max_hp"]:
             game["player_hp"] += 1
-            game["log"] = "– Адреналин. Забираю сигарету. +1 HP."
+            game["log"] = rl_dlg("adr_take_sigara_good", "player")
         else:
-            game["log"] = "– Адреналин. Забираю сигарету. Уже максимум."
+            game["log"] = rl_dlg("adr_take_sigara_max", "player")
     elif item == "tabletki":
         if random.randint(1, 2) == 1:
             game["player_hp"] = min(game["player_max_hp"], game["player_hp"] + 2)
-            game["log"] = "– Адреналин. Забираю таблетки. Полегчало."
+            game["log"] = rl_dlg("adr_take_tabletki_good", "player")
         else:
             game["player_hp"] -= 1
-            game["log"] = "– Адреналин. Забираю таблетки. Плохо."
+            game["log"] = rl_dlg("adr_take_tabletki_bad", "player")
     elif item == "telefon":
         remaining = game["magazine"][game["shot_idx"]:]
         if remaining:
@@ -820,20 +1105,21 @@ async def rl_apply_stolen_item(context, game, item):
             p = remaining[idx]
             label = "боевой" if p == "B" else "холостой"
             game["player_knows"] = p
-            game["log"] = f"– Адреналин. Забираю телефон. {idx+1} патрон... {label}."
+            game["log"] = rl_fmt("adr_take_telefon", "player", N=idx+1, тип=label)
         else:
-            game["log"] = "– Адреналин. Забираю телефон. Пусто."
+            game["log"] = rl_dlg("adr_take_telefon_empty", "player")
     elif item == "bpatron":
         game["magazine"].insert(game["shot_idx"], "B")
-        game["log"] = "– Адреналин. Забираю боевой. Вставляю в ствол."
+        game["log"] = rl_dlg("adr_take_bpatron", "player")
     elif item == "nasadka":
         game["nasadka_active"] = True
-        game["log"] = "– Адреналин. Забираю насадку. На ствол."
+        game["log"] = rl_dlg("adr_take_nasadka", "player")
     elif item == "zerkalo":
         game["player_zerkalo"] = True
-        game["log"] = "– Адреналин. Забираю зеркало. Ставлю."
+        game["log"] = rl_dlg("adr_take_zerkalo", "player")
     elif item == "adrenalin":
-        game["log"] = "– Адреналин. Хм, у Rar тоже адреналин..."
+        game["player_hp"] -= 1
+        game["log"] = rl_dlg("adr_take_adrenalin", "player")
 
 
 async def rl_callback(update, context):
@@ -907,6 +1193,10 @@ async def rl_callback(update, context):
         if "adrenalin" not in game["player_items"]: return
         game["player_items"].remove("adrenalin")
         game["rar_items"].remove(item)
+        game["log"] = rl_dlg("use_adrenalin", "player")
+        await rl_edit(context, game); await asyncio.sleep(1)
+        game["log"] = rl_fmt("adrenalin_take", "player", предмет=ITEM_NAMES[item])
+        await rl_edit(context, game); await asyncio.sleep(1)
         await rl_apply_stolen_item(context, game, item)
         if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
         if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
@@ -915,7 +1205,7 @@ async def rl_callback(update, context):
 
     if data.startswith("rl_shoot_"):
         parts = data.split("_")
-        target = parts[2]  # self / rar
+        target = parts[2]
         gid = parts[3]
         game = roulette_games.get(gid)
         if not game or game["finished"]: return
@@ -937,41 +1227,40 @@ async def rl_callback(update, context):
                     game["player_zerkalo"] = False
                     if dmg == 1:
                         game["rar_hp"] -= 1
-                        game["log"] = "<b>Зеркало треснуло. Урон в Rar.</b>"
+                        game["log"] = rl_dlg("zerkalo_crack", "player")
                     else:
                         game["player_hp"] -= 1
                         game["rar_hp"] -= 2
-                        game["log"] = "<b>Зеркало разлетелось. 1 тебе, 2 Rar.</b>"
+                        game["log"] = rl_dlg("zerkalo_break", "player")
                 else:
                     game["player_hp"] -= dmg
-                    game["log"] = "<b>Попадание.</b>"
+                    game["log"] = rl_dlg("hit", "player")
             else:
                 if game.get("rar_zerkalo"):
                     game["rar_zerkalo"] = False
                     if dmg == 1:
                         game["player_hp"] -= 1
-                        game["log"] = "<b>Зеркало Rar треснуло. Урон в тебя.</b>"
+                        game["log"] = rl_dlg("zerkalo_crack", "player")
                     else:
                         game["rar_hp"] -= 1
                         game["player_hp"] -= 2
-                        game["log"] = "<b>Зеркало Rar разлетелось. 1 ей, 2 тебе.</b>"
+                        game["log"] = rl_dlg("zerkalo_break", "player")
                 else:
                     game["rar_hp"] -= dmg
-                    game["log"] = "<b>Попадание.</b>"
-            # Насадка остаётся. Пила сбрасывается.
+                    game["log"] = rl_dlg("hit", "player")
             if game.get("pila_active"):
                 game["pila_active"] = False
         else:
-            game["log"] = "<b>Щелчок. Пусто.</b>"
+            game["log"] = rl_dlg("blank", "player")
             if game.get("nasadka_active"):
                 game["nasadka_active"] = False
                 if game.get("player_zerkalo"):
                     game["player_zerkalo"] = False
                     game["rar_hp"] -= 1
-                    game["log"] = "<b>Разрыв насадки в зеркало.</b>"
+                    game["log"] = rl_dlg("nasadka_burst", "player") + "\n" + rl_dlg("zerkalo_crack", "player")
                 else:
                     game["player_hp"] -= 1
-                    game["log"] = "<b>Разрыв насадки.</b>"
+                    game["log"] = rl_dlg("nasadka_burst", "player")
             if game.get("pila_active"):
                 game["pila_active"] = False
 
@@ -983,7 +1272,7 @@ async def rl_callback(update, context):
         if reload_needed:
             bonus = ROUND2_RELOAD_BONUS if game["round"] == 2 else (ROUND3_RELOAD_BONUS if game["round"] == 3 else 0)
             game["turn"] = "rar"
-            game["status"] = "Rar перезаряжает ружьё..."
+            game["status"] = rl_dlg("reloading", "player")
             await rl_edit(context, game)
             await rl_reload_with_items(context, game, bonus)
             reloaded = True
@@ -996,7 +1285,6 @@ async def rl_callback(update, context):
             return
 
         game["status"] = "Ход Rar"
-        if not reloaded: pass
         await rl_edit(context, game)
         asyncio.create_task(rl_rar_turn(context, game))
         return
@@ -1014,76 +1302,69 @@ async def rl_callback(update, context):
         if game["turn"] != "player": return
         if item not in game["player_items"]: return
 
+        use_key = f"use_{item}"
+        if use_key in RL_DIALOGS:
+            game["player_items"].remove(item)
+            game["log"] = rl_dlg(use_key, "player")
+            await rl_edit(context, game); await asyncio.sleep(1)
+
         if item == "lupa":
-            game["player_items"].remove("lupa")
             game["player_knows"] = game["magazine"][game["shot_idx"]]
             label = "боевой" if game["player_knows"] == "B" else "холостой"
-            game["log"] = f"– Следующий: {label}."
+            game["log"] = rl_fmt("lupa_result", "player", тип=label)
         elif item == "pila":
-            game["player_items"].remove("pila")
             game["pila_active"] = True
-            game["log"] = "– Ствол срезан."
+            game["log"] = rl_dlg("pila_result", "player")
         elif item == "naruch":
-            game["player_items"].remove("naruch")
             game["rar_skip"] = True
-            game["log"] = "– Наручники на Rar."
+            game["log"] = "<b>Rar пропустит ход.</b>"
         elif item == "sigara":
-            game["player_items"].remove("sigara")
             if game["player_hp"] < game["player_max_hp"]:
-                game["player_hp"] += 1; game["log"] = "– +1 HP."
-            else: game["log"] = "– Уже максимум."
+                game["player_hp"] += 1; game["log"] = rl_dlg("sigara_puff", "player")
+            else: game["log"] = "<b>Уже максимум</b>"
         elif item == "tabletki":
-            game["player_items"].remove("tabletki")
             if random.randint(1, 2) == 1:
                 game["player_hp"] = min(game["player_max_hp"], game["player_hp"] + 2)
-                game["log"] = "– Таблетки. Полегчало."
+                game["log"] = rl_dlg("tabletki_good", "player")
             else:
                 game["player_hp"] -= 1
-                game["log"] = "– Таблетки. Плохо."
+                game["log"] = rl_dlg("tabletki_bad", "player")
         elif item == "telefon":
-            game["player_items"].remove("telefon")
             remaining = game["magazine"][game["shot_idx"]:]
             if remaining:
                 idx = random.randint(0, len(remaining) - 1)
                 p = remaining[idx]
                 label = "боевой" if p == "B" else "холостой"
                 pos = idx + 1
-                game["log"] = f"– {pos} патрон..."
-                await rl_edit(context, game); await asyncio.sleep(1)
-                game["log"] = f"– {pos} патрон... будет..."
-                await rl_edit(context, game); await asyncio.sleep(1)
-                game["log"] = f"– {pos} патрон... будет... {label}..."
+                game["log"] = rl_fmt("telefon_anim", "player", N=pos, тип=label)
                 await rl_edit(context, game); await asyncio.sleep(3)
-                game["log"] = "Телефон разряжен."
+                game["log"] = rl_dlg("telefon_dead", "player")
                 await rl_edit(context, game); await asyncio.sleep(2)
                 game["player_knows"] = p
             else:
-                game["log"] = "– Пусто."
+                game["log"] = rl_dlg("empty", "player")
         elif item == "bpatron":
-            game["player_items"].remove("bpatron")
             game["magazine"].insert(game["shot_idx"], "B")
-            game["log"] = "– Вставляю боевой."
+            game["log"] = rl_dlg("bpatron_use", "player")
         elif item == "nasadka":
-            game["player_items"].remove("nasadka")
             game["nasadka_active"] = True
-            game["log"] = "– Насадка на ствол."
+            game["log"] = rl_dlg("nasadka_use", "player")
         elif item == "zerkalo":
-            game["player_items"].remove("zerkalo")
             game["player_zerkalo"] = True
-            game["log"] = "– Ставлю зеркало."
+            game["log"] = rl_dlg("zerkalo_use", "player")
         elif item == "adrenalin":
             stealable = [it for it in game["rar_items"] if it != "adrenalin"]
             if not stealable:
-                game["log"] = "– У Rar нет предметов."
+                game["log"] = rl_dlg("rar_no_items", "player")
                 await rl_edit(context, game); return
             rows = []
             for it in stealable:
                 rows.append([InlineKeyboardButton(ITEM_NAMES[it], callback_data=f"rl_adr_{it}_{gid}")])
-            rows.append([InlineKeyboardButton("Отмена", callback_data=f"rl_adr_cancel_{gid}")])
+            rows.append([InlineKeyboardButton(RL_BUTTONS["cancel"], callback_data=f"rl_adr_cancel_{gid}")])
             try:
                 await context.bot.edit_message_text(
                     chat_id=game["chat_id"], message_id=game["msg_id"],
-                    text=rl_render(game) + "\n\n<b>Выбери предмет:</b>", parse_mode="HTML",
+                    text=rl_render(game) + "\n\n<b>" + RL_START_DIALOGS["pick_item"] + "</b>", parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(rows))
             except Exception: pass
             return
@@ -1101,8 +1382,8 @@ async def rl_timeout_loop(app):
                     try:
                         await app.bot.edit_message_text(
                             chat_id=game["chat_id"], message_id=game["msg_id"],
-                            text="Сессия рулетки подошла к концу.",
-                            reply_markup=None)
+                            text=SETTINGS_DIALOGS["timeout_game"],
+                            reply_markup=None, parse_mode="HTML")
                     except Exception: pass
                     roulette_games.pop(gid, None)
             for gid, game in list(duel_games.items()):
@@ -1544,10 +1825,9 @@ DELETE_COMMANDS = ["рар удали","рар, удали","rar удали","ra
 
 async def start_command(update, context):
     if update.effective_chat.id >= 0:
-        text = ("<b>Привет! Я Rar – ваш универсальный помощник.</b>\n\n"
-                "В основном я работаю в чатах: храню коллекцию музыки, помогаю админам собирать участников, "
-                "могу поговорить и исполняю другие не мало важные функции.\n\n"
-                "Чтобы узнать, на что я способна, напишите в чате: <code>Рар команды</code>")
+        text = (f"{SETTINGS_DIALOGS['start_title']}\n\n"
+                f"{SETTINGS_DIALOGS['start_body']}\n\n"
+                f"{SETTINGS_DIALOGS['start_hint']}")
         await update.message.reply_text(text, parse_mode="HTML")
 
 
@@ -1698,7 +1978,9 @@ async def handle_message(update, context):
                     sleuth_delete(chat_id, user_id)
                     t_display = f"@{tname}" if tname else f"ID {tid}"
                     a_display = f"@{aname}" if aname else f"ID {aid}"
-                    try: await context.bot.send_message(chat_id=chat_id, text=f"Слежка завершена. {t_display} набрал {cur}/{req}. Наблюдатель: {a_display}.")
+                    try:
+                        msg_text = SLEUTH_DIALOGS["done_chat"].format(цель=t_display, N=cur, M=req, админ=a_display)
+                        await context.bot.send_message(chat_id=chat_id, text=msg_text)
                     except Exception: pass
                     await log_to_owner(context, f"[SLEUTH DONE] {t_display} {cur}/{req} chat={chat_id}")
             except Exception as e:
@@ -1738,7 +2020,7 @@ async def handle_message(update, context):
     sleuth_match = re.match(r"^(рар|rar)[,.]?\s+слежка\s+(.+)$", text, re.IGNORECASE)
     if sleuth_match:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         args_raw = sleuth_match.group(2).strip()
         actor_creator = await get_chat_creator(chat_id, context)
@@ -1753,85 +2035,87 @@ async def handle_message(update, context):
                 target_user = await resolve_user_from_arg(context, chat_id, parts[0])
                 rest = parts[1] if len(parts) > 1 else ""
         if not target_user:
-            await update.message.reply_text("Ответь на сообщение или укажи @username."); return
+            await update.message.reply_text(SLEUTH_DIALOGS["no_active_on_user"]); return
         target_creator = await get_chat_creator(chat_id, context)
         if target_creator and target_user.id == target_creator:
-            await update.message.reply_text("Нельзя вешать слежку на создателя чата!"); return
+            await update.message.reply_text(SLEUTH_DIALOGS["protect_creator"]); return
         target_rank = get_admin_rank(chat_id, target_user.id)
         if target_rank >= RANK_SENIOR and not actor_is_creator:
-            await update.message.reply_text("Нельзя вешать слежку на старшего админа!"); return
+            await update.message.reply_text(SLEUTH_DIALOGS["protect_senior"]); return
         dur_match = re.search(r"((?:\d+\s*[дчмсДЧМС]\s*)+)", rest, re.IGNORECASE)
         if not dur_match:
-            await update.message.reply_text("Укажи срок, например: 2д 12ч"); return
+            await update.message.reply_text(SLEUTH_DIALOGS["no_duration"]); return
         duration_seconds = parse_duration(dur_match.group(1))
         if not duration_seconds:
-            await update.message.reply_text("Не понял срок"); return
+            await update.message.reply_text(SLEUTH_DIALOGS["bad_duration"]); return
         rest_after_dur = rest[dur_match.end():].strip()
         count_match = re.search(r"(\d+)", rest_after_dur)
         if not count_match:
-            await update.message.reply_text("Укажи норму, например: 150"); return
+            await update.message.reply_text(SLEUTH_DIALOGS["no_count"]); return
         required = int(count_match.group(1))
         action_part = rest_after_dur[count_match.end():].strip().lower()
         action = "none"
         if "бан" in action_part: action = "ban"
         elif "кик" in action_part: action = "kick"
         if action in ("ban", "kick") and not actor_is_creator and actor_rank < RANK_SENIOR:
-            await update.message.reply_text("Бан/кик слежку может вешать только старший админ или создатель!"); return
+            await update.message.reply_text(SLEUTH_DIALOGS["no_rights_action"]); return
         sleuth_create(chat_id, target_user.id, target_user.username, user_id, username, required, duration_seconds, action)
         t_display = f"@{target_user.username}" if target_user.username else f'<a href="tg://user?id={target_user.id}">{target_user.first_name}</a>'
         dur_str = format_duration(duration_seconds)
-        await update.message.reply_text(f"Слежка начата. Цель: {t_display}. Норма: {required} за {dur_str}.", parse_mode="HTML")
+        msg_text = SLEUTH_DIALOGS["started"].format(цель=t_display, N=required, срок=dur_str)
+        await update.message.reply_text(msg_text, parse_mode="HTML")
         await log_to_owner(context, f"[SLEUTH START] target={target_user.id} by={user_id} req={required} dur={duration_seconds} action={action} chat={chat_id}")
         return
 
     unsleuth_match = re.match(r"^(рар|rar)[,.]?\s+(?:снять|сними)\s+слежку\s*(.*)$", text, re.IGNORECASE)
     if unsleuth_match:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         target_arg = unsleuth_match.group(2).strip(); target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
             target_user = update.message.reply_to_message.from_user
         elif target_arg:
             target_user = await resolve_user_from_arg(context, chat_id, target_arg)
         if not target_user:
-            await update.message.reply_text("Ответь на сообщение или укажи @username."); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_target_reply"]); return
         row = sleuth_get(chat_id, target_user.id)
         if not row:
-            await update.message.reply_text("Нет активной слежки на этого пользователя"); return
+            await update.message.reply_text(SLEUTH_DIALOGS["no_active_on_user"]); return
         admin_id = row[3]
         creator = await get_chat_creator(chat_id, context)
         if user_id != admin_id and not (creator and user_id == creator):
             await update.message.reply_text("Снять слежку может только тот, кто её повесил, или создатель чата."); return
         sleuth_delete(chat_id, target_user.id)
         t_display = f"@{target_user.username}" if target_user.username else f'<a href="tg://user?id={target_user.id}">{target_user.first_name}</a>'
-        await update.message.reply_text(f"Слежка снята. Цель: {t_display}.", parse_mode="HTML")
+        msg_text = SLEUTH_DIALOGS["cancelled"].format(цель=t_display)
+        await update.message.reply_text(msg_text, parse_mode="HTML")
         await log_to_owner(context, f"[SLEUTH CANCEL] target={target_user.id} by={user_id} chat={chat_id}")
         return
 
     if clean in ["рар слежки", "rar слежки", "рар, слежки", "rar, слежки"]:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         rows = sleuth_get_all(chat_id)
         if not rows:
-            await update.message.reply_text("Активных слежек нет"); return
-        lines = ["Активные слежки:"]
+            await update.message.reply_text(SLEUTH_DIALOGS["no_active"]); return
+        lines = [SLEUTH_DIALOGS["list_header"]]
         for r in rows:
             sid, tid, tname, aid, aname, req, cur, dur, action, deadline = r
             left = deadline.timestamp() - time.time() if deadline else 0
             left_str = format_duration(int(max(0, left)))
             t_display = f"@{tname}" if tname else f"ID {tid}"
             act_str = f" [{action}]" if action != "none" else ""
-            lines.append(f"{t_display} — {cur}/{req}{act_str}, осталось {left_str}")
-        await update.message.reply_text("\n".join(lines)); return
+            lines.append(SLEUTH_DIALOGS["list_item"].format(цель=t_display, N=cur, M=req, action=act_str, время=left_str))
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML"); return
 
     if clean in ["рар вкл калл", "rar вкл калл", "рар, вкл калл", "rar, вкл калл", "рар выкл калл", "rar выкл калл", "рар, выкл калл", "rar, выкл калл"]:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
         val = "вкл" in clean
         set_kall_enabled(chat_id, val)
-        await update.message.reply_text("Калл включён!" if val else "Калл выключен!"); return
+        await update.message.reply_text(ADMIN_DIALOGS["kall_on"] if val else ADMIN_DIALOGS["kall_off"]); return
 
     admin_match = re.match(r"^(рар|rar)[,.]?\s+админ\b(?:\s+(\+\+|--|\+|-))?\s*(.*)$", text, re.IGNORECASE)
     if admin_match:
@@ -1842,54 +2126,54 @@ async def handle_message(update, context):
         elif target_arg:
             target_user = await resolve_user_from_arg(context, chat_id, target_arg)
         if not target_user:
-            await update.message.reply_text("Не нашла. Ответь на сообщение или укажи @username."); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_target_msg"]); return
         if action is None:
             rank = get_admin_rank(chat_id, target_user.id)
             creator = await get_chat_creator(chat_id, context)
             if creator and target_user.id == creator:
-                await update.message.reply_text(f"{target_user.first_name} – создатель чата"); return
+                await update.message.reply_text(ADMIN_DIALOGS["is_creator"].format(имя=target_user.first_name)); return
             try:
                 tg_member = await context.bot.get_chat_member(chat_id, target_user.id)
                 tg_is_admin = tg_member.status in ADMIN_STATUSES
             except Exception: tg_is_admin = False
-            line = f"{target_user.first_name} – {RANK_NAMES.get(rank, 'не админ')}"
+            line = ADMIN_DIALOGS["rank_line"].format(имя=target_user.first_name, ранг=RANK_NAMES.get(rank, 'не админ'))
             if tg_is_admin and rank == RANK_NONE:
-                line += "\n(в Telegram админ, но в БД нет – напиши Рар админ + чтобы синхронизировать)"
+                line += "\n" + ADMIN_DIALOGS["sync_hint"]
             await update.message.reply_text(line, parse_mode="HTML"); return
         if chat_id >= 0:
-            await update.message.reply_text("Эта команда работает только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_long"]); return
         actor_creator = await get_chat_creator(chat_id, context)
         actor_rank = get_admin_rank(chat_id, user_id)
         actor_is_creator = (actor_creator and user_id == actor_creator)
         if not actor_is_creator and actor_rank < RANK_SENIOR:
-            await update.message.reply_text("Не дорос еще! Недостаточно прав!!!"); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_rights"]); return
         target_creator = await get_chat_creator(chat_id, context)
         if target_creator and target_user.id == target_creator:
-            await update.message.reply_text("Нельзя трогать создателя чата!"); return
+            await update.message.reply_text(ADMIN_DIALOGS["protect_creator"]); return
         if target_user.id == user_id:
-            await update.message.reply_text("Себя нельзя!"); return
+            await update.message.reply_text(ADMIN_DIALOGS["self"]); return
         target_rank = get_admin_rank(chat_id, target_user.id)
         if not actor_is_creator and target_rank >= RANK_SENIOR:
-            await update.message.reply_text("Нельзя трогать старшего админа!"); return
+            await update.message.reply_text(ADMIN_DIALOGS["protect_senior"]); return
         new_rank = target_rank
         if action == "+":
             if target_rank == RANK_NONE: new_rank = RANK_LOW
-            else: await update.message.reply_text("Он уже админ. Используй ++."); return
+            else: await update.message.reply_text(ADMIN_DIALOGS["already_admin"]); return
         elif action == "++":
-            if target_rank == RANK_NONE: await update.message.reply_text("Он не админ. Используй +."); return
+            if target_rank == RANK_NONE: await update.message.reply_text(ADMIN_DIALOGS["not_admin"]); return
             elif target_rank < RANK_SENIOR: new_rank = target_rank + 1
-            else: await update.message.reply_text("Уже старший!"); return
+            else: await update.message.reply_text(ADMIN_DIALOGS["already_senior"]); return
         elif action == "-":
             if target_rank > RANK_LOW: new_rank = target_rank - 1
-            else: await update.message.reply_text("Уже мл. Используй --."); return
+            else: await update.message.reply_text(ADMIN_DIALOGS["already_low"]); return
         elif action == "--": new_rank = RANK_NONE
         try:
             bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
             if not getattr(bot_member, 'can_promote_members', False):
-                await update.message.reply_text("У меня нет права назначать админов! Выдайте пожалуйста!!!"); return
+                await update.message.reply_text(ADMIN_DIALOGS["no_promote_rights"]); return
         except Exception as e:
             await log_to_owner(context, f"[PROMOTE CHECK ERROR] {e}")
-            await update.message.reply_text("Не смогла проверить права..."); return
+            await update.message.reply_text(ADMIN_DIALOGS["promote_check_fail"]); return
         try:
             if new_rank == RANK_NONE:
                 await context.bot.promote_chat_member(chat_id, target_user.id, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_manage_chat=False, can_promote_members=False, can_change_info=False, can_pin_messages=False, can_manage_topics=False)
@@ -1901,33 +2185,33 @@ async def handle_message(update, context):
                 await context.bot.promote_chat_member(chat_id, target_user.id, can_delete_messages=True, can_restrict_members=True, can_invite_users=True, can_manage_chat=True, can_promote_members=False, can_change_info=True, can_pin_messages=True, can_manage_topics=True)
         except Exception as e:
             await log_to_owner(context, f"[PROMOTE ERROR] {e}")
-            await update.message.reply_text(f"Не смогла изменить права: {e}"); return
+            await update.message.reply_text(ADMIN_DIALOGS["promote_fail"].format(ошибка=e)); return
         set_admin_rank(chat_id, target_user.id, new_rank, user_id)
-        await update.message.reply_text(f"{target_user.first_name} теперь {RANK_NAMES.get(new_rank, 'не админ')}")
+        await update.message.reply_text(ADMIN_DIALOGS["rank_changed"].format(имя=target_user.first_name, ранг=RANK_NAMES.get(new_rank, 'не админ')))
         await log_to_owner(context, f"[RANK] {target_user.first_name} -> {RANK_NAMES.get(new_rank, 'не админ')} (by {user_id})")
         return
 
     if incoming in ["рар админы", "rar админы", "рар, админы", "rar, админы"]:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         admins = get_all_admins(chat_id)
         creator = await get_chat_creator(chat_id, context)
-        lines = ["Список админов Rar:\n"]
+        lines = [ADMIN_DIALOGS["admins_header"]]
         if creator:
             try:
-                u = await context.bot.get_chat(creator); lines.append(f"{u.first_name} – создатель")
-            except Exception: lines.append(f"ID {creator} – создатель")
+                u = await context.bot.get_chat(creator); lines.append(ADMIN_DIALOGS["creator_line"].format(имя=u.first_name))
+            except Exception: lines.append(ADMIN_DIALOGS["creator_line"].format(имя=f"ID {creator}"))
         for uid, rank in admins:
             try:
-                u = await context.bot.get_chat(uid); lines.append(f"{u.first_name} – {RANK_NAMES.get(rank, '?')}")
-            except Exception: lines.append(f"ID {uid} – {RANK_NAMES.get(rank, '?')}")
-        if len(lines) == 1: lines.append("Пока никого")
+                u = await context.bot.get_chat(uid); lines.append(ADMIN_DIALOGS["rank_line"].format(имя=u.first_name, ранг=RANK_NAMES.get(rank, '?')))
+            except Exception: lines.append(ADMIN_DIALOGS["rank_line"].format(имя=f"ID {uid}", ранг=RANK_NAMES.get(rank, '?')))
+        if len(lines) == 1: lines.append(ADMIN_DIALOGS["admins_empty"])
         await update.message.reply_text("\n".join(lines)); return
 
     ban_match = re.match(r"^(рар|rar)[,.]?\s+бан\s*(.*)$", text, re.IGNORECASE)
     if ban_match:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
         target_user = None; reason = ban_match.group(2).strip()
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
@@ -1937,25 +2221,24 @@ async def handle_message(update, context):
             reason = parts[1] if len(parts) > 1 else ""
             target_user = await resolve_user_from_arg(context, chat_id, target_arg)
         if not target_user:
-            await update.message.reply_text("Ответь или укажи @username"); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_target"]); return
         creator = await get_chat_creator(chat_id, context)
         if creator and target_user.id == creator:
-            await update.message.reply_text("Нельзя банить создателя!"); return
+            await update.message.reply_text(ADMIN_DIALOGS["cant_ban_creator"]); return
         try:
             await context.bot.ban_chat_member(chat_id, target_user.id)
-            msg = f"{target_user.first_name} забанен"
-            if reason: msg += f". Причина: {reason}"
-            await update.message.reply_text(msg)
+            msg_text = ADMIN_DIALOGS["banned_reason"].format(имя=target_user.first_name, причина=reason) if reason else ADMIN_DIALOGS["banned"].format(имя=target_user.first_name)
+            await update.message.reply_text(msg_text)
             await log_to_owner(context, f"[BAN] {target_user.first_name} [ID: {target_user.id}] Чат: {chat_id}. Причина: {reason or '-'}")
         except Exception as e:
-            await update.message.reply_text("У меня недостаточно прав для бана, выдайте пожалуйста!!!")
+            await update.message.reply_text(ADMIN_DIALOGS["no_ban_rights"])
             await log_to_owner(context, f"[BAN ERROR] {e}")
         return
 
     unban_match = re.match(r"^(рар|rar)[,.]?\s+разбан\s*(.*)$", text, re.IGNORECASE)
     if unban_match:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
         target_arg = unban_match.group(2).strip(); target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
@@ -1963,19 +2246,19 @@ async def handle_message(update, context):
         elif target_arg:
             target_user = await resolve_user_from_arg(context, chat_id, target_arg)
         if not target_user:
-            await update.message.reply_text("Ответь или укажи @username"); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_target"]); return
         try:
             await context.bot.unban_chat_member(chat_id, target_user.id, only_if_banned=True)
-            await update.message.reply_text(f"{target_user.first_name} разбанен")
+            await update.message.reply_text(ADMIN_DIALOGS["unbanned"].format(имя=target_user.first_name))
         except Exception as e:
-            await update.message.reply_text("Не получилось разбанить")
+            await update.message.reply_text(ADMIN_DIALOGS["unban_fail"])
             await log_to_owner(context, f"[UNBAN ERROR] {e}")
         return
 
     kick_match = re.match(r"^(рар|rar)[,.]?\s+кик\s*(.*)$", text, re.IGNORECASE)
     if kick_match:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
         target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
@@ -1985,23 +2268,23 @@ async def handle_message(update, context):
             if target_arg:
                 target_user = await resolve_user_from_arg(context, chat_id, target_arg)
         if not target_user:
-            await update.message.reply_text("Ответь или укажи @username"); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_target"]); return
         creator = await get_chat_creator(chat_id, context)
         if creator and target_user.id == creator:
-            await update.message.reply_text("Нельзя кикать создателя!"); return
+            await update.message.reply_text(ADMIN_DIALOGS["cant_kick_creator"]); return
         try:
             await context.bot.ban_chat_member(chat_id, target_user.id)
             await context.bot.unban_chat_member(chat_id, target_user.id)
-            await update.message.reply_text(f"{target_user.first_name} кикнут")
+            await update.message.reply_text(ADMIN_DIALOGS["kicked"].format(имя=target_user.first_name))
         except Exception as e:
-            await update.message.reply_text("Не получилось кикнуть")
+            await update.message.reply_text(ADMIN_DIALOGS["kick_fail"])
             await log_to_owner(context, f"[KICK ERROR] {e}")
         return
 
     mute_match = re.match(r"^(рар|rar)[,.]?\s+мут\s+(.+)$", text, re.IGNORECASE)
     if mute_match:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         args = mute_match.group(2).strip(); target_user = None; duration_seconds = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
@@ -2013,21 +2296,21 @@ async def handle_message(update, context):
             duration_seconds = parse_duration(dur_text)
             target_user = await resolve_user_from_arg(context, chat_id, target_arg)
         if not target_user:
-            await update.message.reply_text("Ответь или укажи @username"); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_target"]); return
         if duration_seconds is None: duration_seconds = 600
         until = int(time.time()) + duration_seconds
         try:
             await context.bot.restrict_chat_member(chat_id, target_user.id, permissions=ChatPermissions(can_send_messages=False), until_date=until)
-            await update.message.reply_text(f"{target_user.first_name} замучен на {format_duration(duration_seconds)}")
+            await update.message.reply_text(ADMIN_DIALOGS["muted"].format(имя=target_user.first_name, срок=format_duration(duration_seconds)))
         except Exception as e:
-            await update.message.reply_text("Не получилось замутить")
+            await update.message.reply_text(ADMIN_DIALOGS["mute_fail"])
             await log_to_owner(context, f"[MUTE ERROR] {e}")
         return
 
-    unmute_match = re.match(r"^(рар|rar)[.,]?\s+размут\s*(.*)$", text, re.IGNORECASE)
+    unmute_match = re.match(r"^(рар|rar)[,.]?\s+размут\s*(.*)$", text, re.IGNORECASE)
     if unmute_match:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         target_user = None
         if update.message.reply_to_message and update.message.reply_to_message.from_user:
@@ -2037,12 +2320,12 @@ async def handle_message(update, context):
             if target_arg:
                 target_user = await resolve_user_from_arg(context, chat_id, target_arg)
         if not target_user:
-            await update.message.reply_text("Ответь или укажи @username"); return
+            await update.message.reply_text(ADMIN_DIALOGS["no_target"]); return
         try:
             await context.bot.restrict_chat_member(chat_id, target_user.id, permissions=ChatPermissions(can_send_messages=True, can_send_audios=True, can_send_documents=True, can_send_photos=True, can_send_videos=True, can_send_video_notes=True, can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
-            await update.message.reply_text(f"{target_user.first_name} размучен")
+            await update.message.reply_text(ADMIN_DIALOGS["unmuted"].format(имя=target_user.first_name))
         except Exception as e:
-            await update.message.reply_text("Не получилось размутить")
+            await update.message.reply_text(ADMIN_DIALOGS["unmute_fail"])
             await log_to_owner(context, f"[UNMUTE ERROR] {e}")
         return
 
@@ -2053,13 +2336,13 @@ async def handle_message(update, context):
             target = update.message.reply_to_message.audio
         elif update.message.audio: target = update.message.audio
         if not target:
-            await update.message.reply_text(f'Прикрепи аудио или ответь "Рар добавь в {pl_name}"'); return
+            await update.message.reply_text(MUSIC_DIALOGS["attach_audio_pl"].format(имя=pl_name)); return
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла плейлист <b>{html_escape(pl_name)}</b>. Создай: <code>Рар создай плейлист {html_escape(pl_name)}</code>", parse_mode="HTML"); return
+            await update.message.reply_text(MUSIC_DIALOGS["pl_not_found"].format(имя=html_escape(pl_name)), parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Это не твой плейлист! Нельзя так делать!!!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["pl_not_yours"]); return
         perf = target.performer.strip() if target.performer else ""
         title = target.title.strip() if target.title else ""
         track_title = f"{perf} - {title}" if perf and title else (target.file_name or "Неизвестный трек")
@@ -2070,11 +2353,11 @@ async def handle_message(update, context):
             else:
                 save_track_to_db(target.file_id, track_title, user_id); tn = get_track_num(target.file_id)
         if not tn:
-            await update.message.reply_text("Что-то пошло не так"); return
+            await update.message.reply_text(MUSIC_DIALOGS["something_wrong"]); return
         result = add_track_to_playlist(pid, tn)
-        if result == "already": await update.message.reply_text("Вообще то этот трек уже в плейлисте")
-        elif result == "limit": await update.message.reply_text(f"Максимум {PLAYLIST_LIMIT} песен!")
-        elif result == "ok": await update.message.reply_text(f"Добавила в плейлист <b>{html_escape(pname)}</b>!", parse_mode="HTML")
+        if result == "already": await update.message.reply_text(MUSIC_DIALOGS["track_already"])
+        elif result == "limit": await update.message.reply_text(MUSIC_DIALOGS["pl_limit"].format(N=PLAYLIST_LIMIT))
+        elif result == "ok": await update.message.reply_text(MUSIC_DIALOGS["pl_added"].format(имя=html_escape(pname)), parse_mode="HTML")
         return
 
     if re.match(r"^(рар|rar)[,.]?\s+добав(ь|ить)$", incoming) or incoming in ["добавь", "добавить"]:
@@ -2095,10 +2378,10 @@ async def handle_message(update, context):
                         await context.bot.send_audio(chat_id=storage, audio=target.file_id, caption=cap)
                     except Exception: pass
                 try:
-                    await context.bot.send_audio(chat_id=chat_id, audio=target.file_id, caption=f"Занесла трек в коллекцию.\n\nИмя в базе: {track_title}")
+                    await context.bot.send_audio(chat_id=chat_id, audio=target.file_id, caption=f"{MUSIC_DIALOGS['track_added']}\n\n{MUSIC_DIALOGS['track_db_name'].format(имя=track_title)}")
                 except Exception: pass
-            else: await update.message.reply_text(f"Этот трек уже сохранён: {track_title}")
-        else: await update.message.reply_text('Прикрепи аудио или ответь "Рар добавь"')
+            else: await update.message.reply_text(MUSIC_DIALOGS["track_saved"].format(имя=track_title))
+        else: await update.message.reply_text(MUSIC_DIALOGS["attach_audio"])
         return
 
     if not text: return
@@ -2143,13 +2426,13 @@ async def handle_message(update, context):
 
     if clean in ["рар проблемные", "rar проблемные"]:
         if user_id != owner_id:
-            await update.message.reply_text("Только для создателя!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["creator_only"]); return
         broken = get_broken_tracks()
         if not broken:
-            await update.message.reply_text("Проблемных треков нет!"); return
-        lines = [f"Проблемные ({len(broken)}):\n"]
-        for tn, title in broken[:30]: lines.append(f"№{tn}: {title}")
-        if len(broken) > 30: lines.append(f"...и ещё {len(broken) - 30}")
+            await update.message.reply_text(MUSIC_DIALOGS["no_broken"]); return
+        lines = [MUSIC_DIALOGS["broken_header"].format(N=len(broken))]
+        for tn, title in broken[:30]: lines.append(MUSIC_DIALOGS["broken_line"].format(N=tn, трек=title))
+        if len(broken) > 30: lines.append(MUSIC_DIALOGS["broken_more"].format(N=len(broken) - 30))
         await update.message.reply_text("\n".join(lines)); return
 
     create_pl = re.match(r"^(рар|rar)[,.]?\s+созда(й|ть)\s+плейлист\s+(.+)$", text, re.IGNORECASE)
@@ -2157,10 +2440,10 @@ async def handle_message(update, context):
         pl_name = create_pl.group(3).strip()
         pid, err = create_playlist(pl_name, user_id)
         if err == "exists":
-            await update.message.reply_text("Такое название уже есть!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["name_exists"]); return
         if err:
-            await update.message.reply_text(f"Ошибка: {err}"); return
-        await update.message.reply_text(f"Плейлист <b>{html_escape(pl_name)}</b> создан!", parse_mode="HTML")
+            await update.message.reply_text(MUSIC_DIALOGS["error"].format(ошибка=err)); return
+        await update.message.reply_text(MUSIC_DIALOGS["pl_created"].format(имя=html_escape(pl_name)), parse_mode="HTML")
         uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
         await notify_moderation(context, f"Создан плейлист\n{html_escape(pl_name)}\nКто: {html_escape(uname)} [ID: {user_id}]")
         return
@@ -2168,19 +2451,19 @@ async def handle_message(update, context):
     if clean in ["рар мои плейлисты", "rar мои плейлисты", "рар, мои плейлисты", "rar, мои плейлисты"]:
         pls = get_user_playlists(user_id)
         if not pls:
-            await update.message.reply_text("Нет плейлистов. Создай: <code>Рар создай плейлист Мой топ</code>", parse_mode="HTML"); return
-        lines = ["Твои плейлисты:\n"]
-        for pid, name, track_nums in pls: lines.append(f"{name} – {len(track_nums or [])} треков")
+            await update.message.reply_text(MUSIC_DIALOGS["no_playlists"], parse_mode="HTML"); return
+        lines = [MUSIC_DIALOGS["your_playlists"]]
+        for pid, name, track_nums in pls: lines.append(MUSIC_DIALOGS["playlist_line"].format(имя=name, N=len(track_nums or [])))
         await update.message.reply_text("\n".join(lines)); return
 
     if clean in ["рар дай плейлист", "rar дай плейлист", "рар, дай плейлист", "rar, дай плейлист"]:
         result = get_random_playlist_with_tracks(user_id)
         if not result:
-            await update.message.reply_text("Нет плейлистов с треками"); return
+            await update.message.reply_text(MUSIC_DIALOGS["no_pl_with_tracks"]); return
         pid, pname, pl_owner, track_nums = result
         built = build_playlist_message(pid, 0)
         if not built:
-            await update.message.reply_text("Ошибка"); return
+            await update.message.reply_text(MUSIC_DIALOGS["error"].format(ошибка="empty")); return
         text_msg, fid, kb = built
         try: await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
         except Exception as e: await log_to_owner(context, f"[PL SEND ERROR] {e}")
@@ -2191,14 +2474,14 @@ async def handle_message(update, context):
         pl_name = find_pl.group(3).strip()
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(MUSIC_DIALOGS["not_found"].format(имя=html_escape(pl_name)), parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if not track_nums:
-            await update.message.reply_text("Плейлист пуст!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["pl_empty"]); return
         increment_playlist_search(pid)
         built = build_playlist_message(pid, 0)
         if not built:
-            await update.message.reply_text("Ошибка"); return
+            await update.message.reply_text(MUSIC_DIALOGS["error"].format(ошибка="empty")); return
         text_msg, fid, kb = built
         try: await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
         except Exception as e: await log_to_owner(context, f"[PL SEND ERROR] {e}")
@@ -2207,10 +2490,10 @@ async def handle_message(update, context):
     if clean in ["рар топ плейлистов", "rar топ плейлистов"]:
         top = get_top_playlists(limit=10)
         if not top:
-            await update.message.reply_text("Топ пуст!"); return
-        lines = ["\nТоп 10 плейлистов\n"]
+            await update.message.reply_text(MUSIC_DIALOGS["top_empty"]); return
+        lines = [MUSIC_DIALOGS["top_pl_header"]]
         for i, (name, searches) in enumerate(top, 1):
-            lines.append(f"{i}. {name} ({searches})")
+            lines.append(MUSIC_DIALOGS["top_pl_line"].format(N=i, имя=name, поиски=searches))
         await update.message.reply_text("\n".join(lines)); return
 
     del_from = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(.+?)\s+из\s+(?:плейлист[а]?\s+)?(.+)$", text, re.IGNORECASE)
@@ -2218,32 +2501,32 @@ async def handle_message(update, context):
         track_query = del_from.group(3).strip(); pl_name = del_from.group(4).strip()
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(MUSIC_DIALOGS["not_found"].format(имя=html_escape(pl_name)), parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Да что ты себе позволяешь?! Не твой плейлист!!!!!!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["not_yours_strict"]); return
         if not track_nums:
-            await update.message.reply_text("Плейлист пуст"); return
+            await update.message.reply_text(MUSIC_DIALOGS["pl_empty_short"]); return
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("SELECT track_num, title FROM channel_music WHERE track_num = ANY(%s) AND LOWER(title) LIKE LOWER(%s)", (track_nums, f"%{track_query}%"))
         found = cursor.fetchone(); cursor.close(); conn.close()
         if not found:
-            await update.message.reply_text(f"Не нашла {track_query} в {pl_name}"); return
+            await update.message.reply_text(MUSIC_DIALOGS["track_not_in_pl"].format(запрос=track_query, плейлист=pl_name)); return
         found_tn, found_title = found
         remove_track_from_playlist(pid, found_tn)
-        await update.message.reply_text(f"Убрала {found_title} из {pl_name}"); return
+        await update.message.reply_text(MUSIC_DIALOGS["track_removed"].format(трек=found_title, плейлист=pl_name)); return
 
     del_pl = re.match(r"^(рар|rar)[,.]?\s+удал(и|ить)\s+(?:плейлист\s+)?(.+)$", text, re.IGNORECASE)
     if del_pl:
         pl_name = del_pl.group(3).strip()
         pl = get_playlist_by_name(pl_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла <b>{html_escape(pl_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(MUSIC_DIALOGS["not_found"].format(имя=html_escape(pl_name)), parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Да что ты себе позволяешь?! Не твой плейлист!!!!!!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["not_yours_strict"]); return
         delete_playlist(pid)
-        await update.message.reply_text(f"Плейлист <b>{html_escape(pname)}</b> удалён", parse_mode="HTML")
+        await update.message.reply_text(MUSIC_DIALOGS["pl_deleted"].format(имя=html_escape(pname)), parse_mode="HTML")
         uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
         await notify_moderation(context, f"Удалён плейлист\n{pname}\nКто: {uname}")
         return
@@ -2253,54 +2536,54 @@ async def handle_message(update, context):
         old_name = ren_pl.group(3).strip(); new_name = ren_pl.group(4).strip()
         pl = get_playlist_by_name(old_name)
         if not pl:
-            await update.message.reply_text(f"Не нашла <b>{html_escape(old_name)}</b>", parse_mode="HTML"); return
+            await update.message.reply_text(MUSIC_DIALOGS["not_found"].format(имя=html_escape(old_name)), parse_mode="HTML"); return
         pid, pname, pl_owner, track_nums = pl
         if user_id != pl_owner and user_id != owner_id:
-            await update.message.reply_text("Да что ты себе позволяешь?! Не твой плейлист!!!!!!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["not_yours_strict"]); return
         err = rename_playlist(pid, new_name)
         if err == "exists":
-            await update.message.reply_text("Такое название уже есть!"); return
-        await update.message.reply_text(f"Переименован: <b>{html_escape(old_name)}</b> – <b>{html_escape(new_name)}</b>", parse_mode="HTML")
+            await update.message.reply_text(MUSIC_DIALOGS["name_exists"]); return
+        await update.message.reply_text(MUSIC_DIALOGS["renamed"].format(старое=html_escape(old_name), новое=html_escape(new_name)), parse_mode="HTML")
         uname = f"@{username}" if username else (update.effective_user.first_name or "друг")
         await notify_moderation(context, f"Переименован плейлист\n{old_name} -> {new_name}\nКто: {uname}")
         return
 
     if clean in ["рар удали трек", "rar удали трек"]:
         if user_id != owner_id:
-            await update.message.reply_text("Только для создателя!"); return
+            await update.message.reply_text(MUSIC_DIALOGS["creator_only"]); return
         if not update.message.reply_to_message or not update.message.reply_to_message.audio:
-            await update.message.reply_text("Ответь на аудио"); return
+            await update.message.reply_text(MUSIC_DIALOGS["reply_audio"]); return
         audio = update.message.reply_to_message.audio
         perf = audio.performer.strip() if audio.performer else ""
         title = audio.title.strip() if audio.title else ""
         fallback = f"{perf} - {title}" if perf and title else (audio.file_name or None)
         deleted = delete_track_from_db(audio.file_id, fallback)
-        if deleted: await update.message.reply_text(f"Трек удалён: {deleted}")
-        else: await update.message.reply_text("Не найден")
+        if deleted: await update.message.reply_text(MUSIC_DIALOGS["track_deleted"].format(имя=deleted))
+        else: await update.message.reply_text(MUSIC_DIALOGS["not_found_short"])
         return
 
     if clean in ["рар топ песен", "rar топ песен", "рар топ песни", "rar топ песни"]:
         top = get_top_tracks(limit=10)
         if not top:
-            await update.message.reply_text("Топ пуст!"); return
-        lines = ["\nТоп 10 треков\n"]
+            await update.message.reply_text(MUSIC_DIALOGS["top_empty"]); return
+        lines = [MUSIC_DIALOGS["top_tracks_header"]]
         for i, (title, plays) in enumerate(top, 1):
-            lines.append(f"{i}. {title} ({plays})")
+            lines.append(MUSIC_DIALOGS["top_track_line"].format(N=i, трек=title, прослушивания=plays))
         await update.message.reply_text("\n".join(lines)); return
 
     toggle_map = {
-        "рар вкл приветствие": ("greet_enabled", True, "Приветствие включено!"),
-        "рар выкл приветствие": ("greet_enabled", False, "Приветствие выключено!"),
-        "rar вкл приветствие": ("greet_enabled", True, "Приветствие включено!"),
-        "rar выкл приветствие": ("greet_enabled", False, "Приветствие выключено!"),
-        "рар вкл прощание": ("farewell_enabled", True, "Прощание включено!"),
-        "рар выкл прощание": ("farewell_enabled", False, "Прощание выключено!"),
-        "rar вкл прощание": ("farewell_enabled", True, "Прощание включено!"),
-        "rar выкл прощание": ("farewell_enabled", False, "Прощание выключено!"),
+        "рар вкл приветствие": ("greet_enabled", True, SETTINGS_DIALOGS["greet_on"]),
+        "рар выкл приветствие": ("greet_enabled", False, SETTINGS_DIALOGS["greet_off"]),
+        "rar вкл приветствие": ("greet_enabled", True, SETTINGS_DIALOGS["greet_on"]),
+        "rar выкл приветствие": ("greet_enabled", False, SETTINGS_DIALOGS["greet_off"]),
+        "рар вкл прощание": ("farewell_enabled", True, SETTINGS_DIALOGS["farewell_on"]),
+        "рар выкл прощание": ("farewell_enabled", False, SETTINGS_DIALOGS["farewell_off"]),
+        "rar вкл прощание": ("farewell_enabled", True, SETTINGS_DIALOGS["farewell_on"]),
+        "rar выкл прощание": ("farewell_enabled", False, SETTINGS_DIALOGS["farewell_off"]),
     }
     if clean in toggle_map:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
         field, val, msg = toggle_map[clean]
         update_chat_setting(chat_id, field, val)
@@ -2310,18 +2593,18 @@ async def handle_message(update, context):
     matched_fare = next((p for p in FAREWELL_PREFIXES if clean == p or clean.startswith(p + " ")), None)
     if matched_greet or matched_fare:
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_SENIOR): return
         matched = matched_greet or matched_fare
         new_text = text.strip()[len(matched):].strip()
         if not new_text:
-            await update.message.reply_text("Напиши текст!"); return
+            await update.message.reply_text(SETTINGS_DIALOGS["write_text"]); return
         if matched_greet:
             update_chat_setting(chat_id, "greet_text", new_text)
-            await update.message.reply_text(f"Приветствие обновлено:\n\n{new_text}")
+            await update.message.reply_text(f"{SETTINGS_DIALOGS['greet_updated']}\n\n{new_text}")
         else:
             update_chat_setting(chat_id, "farewell_text", new_text)
-            await update.message.reply_text(f"Прощание обновлено:\n\n{new_text}")
+            await update.message.reply_text(f"{SETTINGS_DIALOGS['farewell_updated']}\n\n{new_text}")
         return
 
     if clean in ["rar", "рар"]:
@@ -2373,7 +2656,7 @@ async def handle_message(update, context):
         try:
             tracks = get_all_tracks_from_db(only_ok=True)
             if not tracks:
-                await update.message.reply_text("Коллекция пуста!"); return
+                await update.message.reply_text(MUSIC_DIALOGS["collection_empty"]); return
             if chat_id not in recent_tracks_history or not isinstance(recent_tracks_history[chat_id], list):
                 recent_tracks_history[chat_id] = []
             avail = [t for t in tracks if t not in recent_tracks_history[chat_id]] or tracks
@@ -2382,21 +2665,21 @@ async def handle_message(update, context):
             recent_tracks_history[chat_id].append(fid)
             lim = max(5, len(tracks) // 3)
             if len(recent_tracks_history[chat_id]) > lim: recent_tracks_history[chat_id].pop(0)
-            try: await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"Вот ваша песня.\n\n{ttitle}")
+            try: await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"{MUSIC_DIALOGS['here_song']}\n\n{ttitle}")
             except Exception as e: print(f"[SEND AUDIO] {e}")
-        except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
+        except Exception as e: await update.message.reply_text(MUSIC_DIALOGS["error"].format(ошибка=e))
         return
 
     if clean == "калл":
         if chat_id >= 0:
-            await update.message.reply_text("Только в группах"); return
+            await update.message.reply_text(ADMIN_DIALOGS["group_only_short"]); return
         if not get_kall_enabled(chat_id):
-            await update.message.reply_text("Калл отключён."); return
+            await update.message.reply_text(ADMIN_DIALOGS["kall_disabled"]); return
         if not await check_user_rank(update, context, chat_id, user_id, RANK_MID): return
         try:
             user_ids = get_chat_members(chat_id)
             if not user_ids:
-                await update.message.reply_text("Список пуст"); return
+                await update.message.reply_text(ADMIN_DIALOGS["empty_list"]); return
             valid = [STATUS_MEMBER, STATUS_ADMINISTRATOR, STATUS_CREATOR, STATUS_RESTRICTED]
             tags, to_remove = [], []
             for m_id in user_ids:
@@ -2420,10 +2703,10 @@ async def handle_message(update, context):
                     for uid in to_remove: uncache_user(uid, chat_id)
                 except Exception: pass
             if not tags:
-                await update.message.reply_text("Нет активных"); return
+                await update.message.reply_text(ADMIN_DIALOGS["no_active_members"]); return
             for i in range(0, len(tags), 6):
                 chunk = tags[i:i+6]
-                try: await update.message.reply_text("<b>Минуточку внимания!</b>\n\n" + "\n".join(chunk), parse_mode="HTML")
+                try: await update.message.reply_text(f"<b>{ADMIN_DIALOGS['kall_header']}</b>\n\n" + "\n".join(chunk), parse_mode="HTML")
                 except Exception: pass
         except Exception as e: await log_to_owner(context, f"[КАЛЛ FATAL] {e}")
         return
@@ -2432,18 +2715,18 @@ async def handle_message(update, context):
     if find_track:
         query = find_track.group(3).strip()
         if not query:
-            await update.message.reply_text("Напиши название"); return
-        status_msg = await update.message.reply_text("Ищу...")
+            await update.message.reply_text(SETTINGS_DIALOGS["write_text"]); return
+        status_msg = await update.message.reply_text(MUSIC_DIALOGS["searching"])
         local_track = search_track_in_db(query)
         if local_track:
             fid, ttitle, tnum = local_track
             await status_msg.delete()
             try:
-                await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"Нашла: {ttitle}\n\nЗапрос: {query}")
+                await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=f"{MUSIC_DIALOGS['found'].format(трек=ttitle)}\n\n{MUSIC_DIALOGS['query'].format(запрос=query)}")
                 increment_play(fid)
             except Exception as e: print(f"[FIND SEND] {e}")
             return
-        else: await status_msg.edit_text("Не нашла такую песню")
+        else: await status_msg.edit_text(MUSIC_DIALOGS["not_found_song"])
 
 
 async def handle_chat_member(update, context):
@@ -2492,14 +2775,14 @@ async def handle_my_chat_member(update, context):
         if old_status not in ADMIN_STATUSES and new_status in ADMIN_STATUSES:
             now = time.time()
             if chat_id in _recent_greets and now - _recent_greets[chat_id] < GREET_DEDUP_TTL:
-                try: await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать")
+                try: await context.bot.send_message(chat_id=chat_id, text=SETTINGS_DIALOGS["thanks"])
                 except Exception: pass
                 return
-            try: await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать")
+            try: await context.bot.send_message(chat_id=chat_id, text=SETTINGS_DIALOGS["thanks"])
             except Exception: pass
             return
         if old_status in ADMIN_STATUSES and new_status not in ADMIN_STATUSES:
-            try: await context.bot.send_message(chat_id=chat_id, text="Эй! Верните мне админа! Я же так сломаться могу!!!")
+            try: await context.bot.send_message(chat_id=chat_id, text=SETTINGS_DIALOGS["lost_admin"])
             except Exception: pass
             return
         if old_status not in IN_CHAT_STATUSES and new_status in IN_CHAT_STATUSES:
@@ -2513,11 +2796,10 @@ async def handle_my_chat_member(update, context):
                     save_user_to_chat(admin.user.id, chat_id); cache_user(admin.user.id, chat_id)
             except Exception: pass
             if new_status in ADMIN_STATUSES:
-                try: await context.bot.send_message(chat_id=chat_id, text="Спасибо, теперь могу работать")
+                try: await context.bot.send_message(chat_id=chat_id, text=SETTINGS_DIALOGS["thanks"])
                 except Exception: pass
             else:
-                text = ("Здравствуйте! Я Rar.\n\nДля работы дайте мне права админа, пожалуйста!\n\n"
-                        "Команды: <code>Рар команды</code>")
+                text = f"{SETTINGS_DIALOGS['join_no_admin']}\n\n{SETTINGS_DIALOGS['join_no_admin_hint']}\n\n{SETTINGS_DIALOGS['join_commands']}"
                 try: await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
                 except Exception: pass
     except Exception as e: print(f"[MY_CHAT_MEMBER FATAL] {e}")
@@ -2534,21 +2816,21 @@ async def sleuth_deadline_loop(app):
                 t_display = f"@{tname}" if tname else f"ID {target_id}"
                 a_display = f"@{aname}" if aname else f"ID {admin_id}"
                 dur_str = format_duration(dur)
-                msg = f"Слежка завершена. {t_display} набрал {cur}/{req} за {dur_str}. Наблюдатель: {a_display}."
+                msg = SLEUTH_DIALOGS["done_deadline"].format(цель=t_display, N=cur, M=req, срок=dur_str, админ=a_display)
                 if action == "kick":
                     try:
                         await app.bot.ban_chat_member(chat_id, target_id)
                         await app.bot.unban_chat_member(chat_id, target_id)
-                        msg += " Исключён."
+                        msg += "\n" + SLEUTH_DIALOGS["kicked"]
                     except Exception as e:
-                        msg += " Не смогла кикнуть (мало прав)."
+                        msg += "\n" + SLEUTH_DIALOGS["no_kick_rights"]
                         print(f"[SLEUTH KICK ERROR] {e}")
                 elif action == "ban":
                     try:
                         await app.bot.ban_chat_member(chat_id, target_id)
-                        msg += " Забанен."
+                        msg += "\n" + SLEUTH_DIALOGS["banned"]
                     except Exception as e:
-                        msg += " Не смогла забанить (мало прав)."
+                        msg += "\n" + SLEUTH_DIALOGS["no_ban_rights"]
                         print(f"[SLEUTH BAN ERROR] {e}")
                 try: await app.bot.send_message(chat_id=chat_id, text=msg)
                 except Exception: pass
@@ -2607,7 +2889,7 @@ async def error_handler(update, context):
 
 
 async def handle_http(request):
-    return web.Response(text="Бот Rar активен!")
+    return web.Response(text=SETTINGS_DIALOGS["bot_alive"])
 
 
 async def start_webhook():
