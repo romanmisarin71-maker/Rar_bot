@@ -29,6 +29,44 @@ LEAVE_STATUSES = {STATUS_LEFT, STATUS_KICKED, STATUS_BANNED}
 RANK_NONE = 0; RANK_LOW = 1; RANK_MID = 2; RANK_SENIOR = 3
 RANK_NAMES = {0: "не админ", 1: "мл. админ", 2: "ср. админ", 3: "ст. админ"}
 
+RANK_PERMS = {
+    RANK_NONE: {
+        "can_delete_messages": False, "can_restrict_members": False,
+        "can_invite_users": False, "can_manage_chat": False,
+        "can_promote_members": False, "can_change_info": False,
+        "can_pin_messages": False, "can_manage_topics": False,
+    },
+    RANK_LOW: {
+        "can_delete_messages": True, "can_restrict_members": False,
+        "can_invite_users": False, "can_manage_chat": False,
+        "can_promote_members": False, "can_change_info": False,
+        "can_pin_messages": False, "can_manage_topics": False,
+    },
+    RANK_MID: {
+        "can_delete_messages": True, "can_restrict_members": True,
+        "can_invite_users": True, "can_manage_chat": False,
+        "can_promote_members": False, "can_change_info": False,
+        "can_pin_messages": False, "can_manage_topics": False,
+    },
+    RANK_SENIOR: {
+        "can_delete_messages": True, "can_restrict_members": True,
+        "can_invite_users": True, "can_manage_chat": True,
+        "can_promote_members": False, "can_change_info": True,
+        "can_pin_messages": True, "can_manage_topics": True,
+    },
+}
+
+PERM_NAMES_RU = {
+    "can_delete_messages": "Удаление сообщений",
+    "can_restrict_members": "Блокировка участников",
+    "can_invite_users": "Добавление участников",
+    "can_manage_chat": "Управление чатом",
+    "can_promote_members": "Назначение админов",
+    "can_change_info": "Изменение профиля группы",
+    "can_pin_messages": "Закрепление сообщений",
+    "can_manage_topics": "Управление темами",
+}
+
 roulette_games = {}
 ROULETTE_TIMEOUT = 900
 
@@ -66,7 +104,6 @@ ROUND3_START_PHRASES = [
     "Хватит игр. Я покажу, кто здесь дилер.",
 ]
 
-# Реплики рулетки с разделением rar/player
 RL_DIALOGS = {
     "naruch_skip": {"rar": "– Ходи быстрее.", "player": "<b>Вы не можете пошевелить руками</b>"},
     "rar_take_gun": {"rar": "<b>Рар берет ружье</b>", "player": "<b>Рар берет ружье</b>"},
@@ -101,7 +138,6 @@ RL_DIALOGS = {
     "telefon_dead": {"rar": "<b>Телефон разряжен</b>", "player": "<b>Телефон разряжен</b>"},
     "empty": {"rar": "– Пусто...", "player": "– Пусто..."},
     "rar_no_items": {"rar": "<b>У Рар нет предметов</b>", "player": "<b>У Рар нет предметов</b>"},
-    # Анимации использования предметов (игрок и Rar)
     "use_naruch": {"rar": "<b>Рар использует наручники</b>", "player": "<b>Вы используете наручники</b>"},
     "use_sigara": {"rar": "<b>Рар использует сигарету</b>", "player": "<b>Вы используете сигарету</b>"},
     "use_tabletki": {"rar": "<b>Рар использует таблетки</b>", "player": "<b>Вы используете таблетки</b>"},
@@ -112,7 +148,6 @@ RL_DIALOGS = {
     "use_pila": {"rar": "<b>Рар использует пилу</b>", "player": "<b>Вы используете пилу</b>"},
     "use_lupa": {"rar": "<b>Рар использует лупу</b>", "player": "<b>Вы используете лупу</b>"},
     "use_adrenalin": {"rar": "<b>Рар использует адреналин</b>", "player": "<b>Вы используете адреналин</b>"},
-    # Эффекты адреналина (игрок крадёт у Rar)
     "adr_take_naruch": {"rar": "<b>Вы берете наручники</b>\n<b>Rar пропустит ход.</b>", "player": "<b>Вы берете наручники</b>\n<b>Rar пропустит ход.</b>"},
     "adr_take_sigara_good": {"rar": "<b>Вы берете сигарету</b>\n<b>Вы чувствуете себя чуть лучше</b>", "player": "<b>Вы берете сигарету</b>\n<b>Вы чувствуете себя чуть лучше</b>"},
     "adr_take_sigara_max": {"rar": "<b>Вы берете сигарету</b>\n– Сильная страсть к сигаретам?", "player": "<b>Вы берете сигарету</b>\n– Сильная страсть к сигаретам?"},
@@ -291,13 +326,11 @@ SETTINGS_DIALOGS = {
 
 
 def rl_dlg(key, actor="player"):
-    """Возвращает фразу из RL_DIALOGS по ключу и актору."""
     entry = RL_DIALOGS.get(key, {})
     return entry.get(actor, entry.get("player", ""))
 
 
 def rl_fmt(key, actor="player", **kwargs):
-    """Возвращает отформатированную фразу."""
     text = rl_dlg(key, actor)
     try:
         return text.format(**kwargs)
@@ -401,6 +434,42 @@ def set_admin_rank(chat_id, user_id, rank, by_user):
     else:
         cursor.execute("INSERT INTO chat_admins (chat_id, user_id, rank, assigned_by, assigned_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (chat_id, user_id) DO UPDATE SET rank = EXCLUDED.rank, assigned_by = EXCLUDED.assigned_by, assigned_at = NOW()", (chat_id, user_id, rank, by_user))
     conn.commit(); cursor.close(); conn.close()
+
+
+async def safe_promote(context, chat_id, target_id, wanted):
+    """
+    Выдаёт только те права, которые есть у бота.
+    Возвращает: (ok, granted_list, skipped_list, err)
+    """
+    try:
+        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+    except Exception as e:
+        return False, [], [], f"get_chat_member: {e}"
+
+    granted = {}
+    skipped = []
+    for perm, val in wanted.items():
+        if not val:
+            granted[perm] = False
+            continue
+        bot_has = getattr(bot_member, perm, False)
+        if bot_has:
+            granted[perm] = True
+        else:
+            granted[perm] = False
+            skipped.append(perm)
+
+    try:
+        await context.bot.promote_chat_member(chat_id, target_id, **granted)
+        return True, [k for k, v in granted.items() if v], skipped, None
+    except Exception as e:
+        err = str(e)
+        try:
+            minimal = {"can_delete_messages": True}
+            await context.bot.promote_chat_member(chat_id, target_id, **minimal)
+            return True, ["can_delete_messages"], skipped + ["(fallback)"], err
+        except Exception as e2:
+            return False, [], [], f"{err} | fallback: {e2}"
 
 
 def get_all_admins(chat_id):
@@ -1074,7 +1143,6 @@ async def _rl_rar_turn_inner(context, game):
 # ==================== ОБРАБОТКА КНОПОК РУЛЕТКИ ====================
 
 async def rl_apply_stolen_item(context, game, item):
-    """Игрок украл предмет у Rar через адреналин — применяем эффект."""
     if item == "lupa":
         game["player_knows"] = game["magazine"][game["shot_idx"]]
         label = "боевой" if game["player_knows"] == "B" else "холостой"
@@ -2167,28 +2235,49 @@ async def handle_message(update, context):
             if target_rank > RANK_LOW: new_rank = target_rank - 1
             else: await update.message.reply_text(ADMIN_DIALOGS["already_low"]); return
         elif action == "--": new_rank = RANK_NONE
-        try:
-            bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-            if not getattr(bot_member, 'can_promote_members', False):
-                await update.message.reply_text(ADMIN_DIALOGS["no_promote_rights"]); return
-        except Exception as e:
-            await log_to_owner(context, f"[PROMOTE CHECK ERROR] {e}")
-            await update.message.reply_text(ADMIN_DIALOGS["promote_check_fail"]); return
-        try:
-            if new_rank == RANK_NONE:
-                await context.bot.promote_chat_member(chat_id, target_user.id, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_manage_chat=False, can_promote_members=False, can_change_info=False, can_pin_messages=False, can_manage_topics=False)
-            elif new_rank == RANK_LOW:
-                await context.bot.promote_chat_member(chat_id, target_user.id, can_delete_messages=True, can_restrict_members=False, can_invite_users=False, can_manage_chat=False, can_promote_members=False, can_change_info=False, can_pin_messages=False, can_manage_topics=False)
-            elif new_rank == RANK_MID:
-                await context.bot.promote_chat_member(chat_id, target_user.id, can_delete_messages=True, can_restrict_members=True, can_invite_users=True, can_manage_chat=False, can_promote_members=False, can_change_info=False, can_pin_messages=False, can_manage_topics=False)
-            else:
-                await context.bot.promote_chat_member(chat_id, target_user.id, can_delete_messages=True, can_restrict_members=True, can_invite_users=True, can_manage_chat=True, can_promote_members=False, can_change_info=True, can_pin_messages=True, can_manage_topics=True)
-        except Exception as e:
-            await log_to_owner(context, f"[PROMOTE ERROR] {e}")
-            await update.message.reply_text(ADMIN_DIALOGS["promote_fail"].format(ошибка=e)); return
+
+        wanted = RANK_PERMS.get(new_rank, RANK_PERMS[RANK_NONE])
+        ok, granted, skipped, err = await safe_promote(context, chat_id, target_user.id, wanted)
+
+        # Ранг в БД ставим ВСЕГДА — даже если Telegram не дал часть прав
         set_admin_rank(chat_id, target_user.id, new_rank, user_id)
-        await update.message.reply_text(ADMIN_DIALOGS["rank_changed"].format(имя=target_user.first_name, ранг=RANK_NAMES.get(new_rank, 'не админ')))
-        await log_to_owner(context, f"[RANK] {target_user.first_name} -> {RANK_NAMES.get(new_rank, 'не админ')} (by {user_id})")
+
+        if not ok:
+            skipped_ru = "\n".join(f"• {PERM_NAMES_RU.get(p, p)}" for p in skipped) if skipped else "все"
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(f"<b>Ошибка повышения</b>\n"
+                          f"Цель: {html_escape(target_user.first_name)} [ID: {target_user.id}]\n"
+                          f"Ранг в БД: {RANK_NAMES.get(new_rank, '?')}\n"
+                          f"Telegram-права не выданы.\n"
+                          f"<b>Ошибка:</b>\n<code>{html_escape(err[:800])}</code>"),
+                    parse_mode="HTML")
+            except Exception: pass
+            await log_to_owner(context, f"[PROMOTE ERROR] chat={chat_id} target={target_user.id} err={err}")
+            await update.message.reply_text(
+                f"{html_escape(target_user.first_name)} теперь {RANK_NAMES.get(new_rank, 'не админ')} (в БД).\n"
+                f"Но Telegram-права выдать не удалось. Подробности отправила тебе в личку.")
+            return
+
+        if skipped:
+            skipped_ru = "\n".join(f"• {PERM_NAMES_RU.get(p, p)}" for p in skipped)
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(f"<b>Повышение с ограничениями</b>\n"
+                          f"Цель: {html_escape(target_user.first_name)} [ID: {target_user.id}]\n"
+                          f"Ранг в БД: {RANK_NAMES.get(new_rank, '?')}\n\n"
+                          f"<b>Не выданы права</b> (у бота их нет):\n{skipped_ru}"),
+                    parse_mode="HTML")
+            except Exception: pass
+            await log_to_owner(context, f"[PROMOTE PARTIAL] chat={chat_id} target={target_user.id} skipped={skipped}")
+            await update.message.reply_text(
+                f"{html_escape(target_user.first_name)} теперь {RANK_NAMES.get(new_rank, 'не админ')}.\n"
+                f"Часть прав выдать не смогла — отправила тебе список в личку.")
+        else:
+            await update.message.reply_text(f"{html_escape(target_user.first_name)} теперь {RANK_NAMES.get(new_rank, 'не админ')}")
+            await log_to_owner(context, f"[RANK] {target_user.first_name} -> {RANK_NAMES.get(new_rank, 'не админ')} (by {user_id})")
         return
 
     if incoming in ["рар админы", "rar админы", "рар, админы", "rar, админы"]:
