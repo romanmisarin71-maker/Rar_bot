@@ -72,7 +72,7 @@ roulette_games = {}
 ROULETTE_TIMEOUT = 900
 _roulette_locks = {}
 
-# Индивидуальные очереди для каждого чата
+# Очереди для каждого чата
 _rl_edit_queues = {}
 _rl_edit_tasks = {}
 
@@ -732,7 +732,7 @@ async def _rl_edit_worker_for_chat(bot, chat_id):
             
             if future: future.set_result(None)
             queue.task_done()
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.1)
         except Exception as e:
             print(f"[RL WORKER FATAL {chat_id}] {e}")
             await asyncio.sleep(1)
@@ -745,8 +745,10 @@ def _get_chat_queue(chat_id, bot):
 
 async def rl_edit(context, game):
     game["last_action"] = time.time()
-    queue = _get_chat_queue(game["chat_id"], context.bot)
-    await queue.put((game, None))
+    if not game.get("_in_queue"):
+        game["_in_queue"] = True
+        queue = _get_chat_queue(game["chat_id"], context.bot)
+        await queue.put((game, None))
 
 async def rl_edit_wait(context, game):
     game["last_action"] = time.time()
@@ -757,8 +759,10 @@ async def rl_edit_wait(context, game):
 
 async def rl_edit_bot(bot, game):
     game["last_action"] = time.time()
-    queue = _get_chat_queue(game["chat_id"], bot)
-    await queue.put((game, None))
+    if not game.get("_in_queue"):
+        game["_in_queue"] = True
+        queue = _get_chat_queue(game["chat_id"], bot)
+        await queue.put((game, None))
 
 
 async def rl_finish(context, game, winner):
@@ -807,8 +811,8 @@ async def rl_give_items_with_animation(context, game, who, items):
     target = game["player_items"] if who == "player" else game["rar_items"]
     for it in items:
         target.append(it)
-        await rl_edit_wait(context, game)
-        await asyncio.sleep(1)
+        await rl_edit(context, game)
+        await asyncio.sleep(0.5)
 
 
 async def rl_reload_with_items(context, game, bonus):
@@ -818,11 +822,11 @@ async def rl_reload_with_items(context, game, bonus):
     game["shot_idx"] = 0
     game["status"] = RL_START_DIALOGS["reload_start"]
     game["log"] = ""
-    await rl_edit_wait(context, game)
-    await asyncio.sleep(3)
+    await rl_edit(context, game)
+    await asyncio.sleep(2)
     game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
     await rl_edit_wait(context, game)
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
 
     if game["round"] == 2:
         limit = ROUND2_ITEM_LIMIT
@@ -838,19 +842,19 @@ async def rl_reload_with_items(context, game, bonus):
 
     if p_need > 0:
         game["log"] = RL_DIALOGS["items_for_you"]["player"]
-        await rl_edit_wait(context, game); await asyncio.sleep(1)
+        await rl_edit(context, game); await asyncio.sleep(0.5)
         p_items = rl_generate_items(pool, p_need, existing=game["player_items"])
         await rl_give_items_with_animation(context, game, "player", p_items)
 
     if r_need > 0:
         game["log"] = RL_DIALOGS["items_for_me"]["player"]
-        await rl_edit_wait(context, game); await asyncio.sleep(1)
+        await rl_edit(context, game); await asyncio.sleep(0.5)
         r_items = rl_generate_items(pool, r_need, existing=game["rar_items"])
         await rl_give_items_with_animation(context, game, "rar", r_items)
 
     game["log"] = ""
-    await rl_edit_wait(context, game)
-    await asyncio.sleep(1)
+    await rl_edit(context, game)
+    await asyncio.sleep(0.5)
 
 
 async def rl_reload(context, game):
@@ -860,9 +864,16 @@ async def rl_reload(context, game):
 async def rl_start(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
+    
     if chat_id not in _roulette_locks:
         _roulette_locks[chat_id] = asyncio.Lock()
     async with _roulette_locks[chat_id]:
+        # Максимум 3 игры в чате
+        active_chat_games = [g for g in roulette_games.values() if g["chat_id"] == chat_id and not g.get("finished")]
+        if len(active_chat_games) >= 3:
+            await update.message.reply_text("В этом чате уже играют 3 рулетки. Дождитесь окончания хотя бы одной.")
+            return
+
         old_games = [(gid, g) for gid, g in roulette_games.items() if g["chat_id"] == chat_id and g["player_id"] == user_id and not g.get("finished")]
         for old_gid, old_game in old_games:
             try:
@@ -874,7 +885,7 @@ async def rl_start(update, context):
         cfg = rl_round_config(1)
         count = random.randint(3, 8)
         mag, bullets, blanks = rl_make_magazine(count)
-        game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
+        game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time(), "_in_queue": False}
         try:
             msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
         except RetryAfter as e:
@@ -900,18 +911,18 @@ async def rl_round2_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time(), "_in_queue": False}
     roulette_games[gid] = game
     game["log"] = RL_START_DIALOGS["box_appears"]
-    await rl_edit_wait(context, game); await asyncio.sleep(1)
+    await rl_edit(context, game); await asyncio.sleep(0.5)
     game["log"] = RL_START_DIALOGS["round2_items"]
-    await rl_edit_wait(context, game); await asyncio.sleep(1)
-    game["player_items"].append(p_items[0]); await rl_edit_wait(context, game); await asyncio.sleep(1)
-    game["player_items"].append(p_items[1]); await rl_edit_wait(context, game); await asyncio.sleep(1)
-    game["rar_items"].append(r_items[0]); await rl_edit_wait(context, game); await asyncio.sleep(1)
-    game["rar_items"].append(r_items[1]); await rl_edit_wait(context, game); await asyncio.sleep(1)
+    await rl_edit(context, game); await asyncio.sleep(0.5)
+    game["player_items"].append(p_items[0]); await rl_edit(context, game); await asyncio.sleep(0.5)
+    game["player_items"].append(p_items[1]); await rl_edit(context, game); await asyncio.sleep(0.5)
+    game["rar_items"].append(r_items[0]); await rl_edit(context, game); await asyncio.sleep(0.5)
+    game["rar_items"].append(r_items[1]); await rl_edit(context, game); await asyncio.sleep(0.5)
     game["log"] = RL_START_DIALOGS["round2_finish"]
-    await rl_edit_wait(context, game); await asyncio.sleep(4)
+    await rl_edit(context, game); await asyncio.sleep(1.5)
     game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
     game["status"] = "Твой ход"
     await rl_edit_wait(context, game)
@@ -926,19 +937,19 @@ async def rl_round3_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time(), "_in_queue": False}
     roulette_games[gid] = game
     start_phrase = random.choice(ROUND3_START_PHRASES)
     game["log"] = f"– {start_phrase}"
-    await rl_edit_wait(context, game); await asyncio.sleep(3)
+    await rl_edit(context, game); await asyncio.sleep(1.5)
     game["log"] = RL_START_DIALOGS["box_appears"]
-    await rl_edit_wait(context, game); await asyncio.sleep(1)
+    await rl_edit(context, game); await asyncio.sleep(0.5)
     game["log"] = RL_START_DIALOGS["round3_items"]
-    await rl_edit_wait(context, game); await asyncio.sleep(1)
+    await rl_edit(context, game); await asyncio.sleep(0.5)
     for i in range(4):
-        game["player_items"].append(p_items[i]); await rl_edit_wait(context, game); await asyncio.sleep(1)
+        game["player_items"].append(p_items[i]); await rl_edit(context, game); await asyncio.sleep(0.5)
     for i in range(4):
-        game["rar_items"].append(r_items[i]); await rl_edit_wait(context, game); await asyncio.sleep(1)
+        game["rar_items"].append(r_items[i]); await rl_edit(context, game); await asyncio.sleep(0.5)
     game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
     game["status"] = "Твой ход"
     await rl_edit_wait(context, game)
@@ -965,16 +976,16 @@ async def _rl_rar_turn_inner(context, game):
         game["log"] = rl_dlg("naruch_skip", "rar")
         game["turn"] = "player"
         game["status"] = "Твой ход"
-        await rl_edit_wait(context, game)
-        await asyncio.sleep(2)
+        await rl_edit(context, game)
+        await asyncio.sleep(1)
         return
 
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
     game["turn"] = "rar"
     game["log"] = rl_dlg("rar_take_gun", "rar")
     game["status"] = "Ход Rar"
-    await rl_edit_wait(context, game)
-    await asyncio.sleep(2)
+    await rl_edit(context, game)
+    await asyncio.sleep(1)
 
     remaining = len(game["magazine"]) - game["shot_idx"]
     if remaining == 1:
@@ -987,7 +998,7 @@ async def _rl_rar_turn_inner(context, game):
             if should_use:
                 game["rar_items"].remove("tabletki")
                 game["log"] = rl_dlg("use_tabletki", "rar")
-                await rl_edit_wait(context, game); await asyncio.sleep(1)
+                await rl_edit(context, game); await asyncio.sleep(0.5)
                 if random.randint(1, 2) == 1:
                     game["rar_hp"] = min(game["rar_max_hp"], game["rar_hp"] + 2)
                     game["log"] = rl_dlg("tabletki_good", "rar")
@@ -995,17 +1006,17 @@ async def _rl_rar_turn_inner(context, game):
                     game["rar_hp"] -= 1
                     game["log"] = rl_dlg("tabletki_bad", "rar")
                 game["status"] = "Ход Rar"
-                await rl_edit_wait(context, game); await asyncio.sleep(2)
+                await rl_edit(context, game); await asyncio.sleep(1)
                 if game["rar_hp"] <= 0:
                     await rl_finish(context, game, "player"); return
 
         if "telefon" in game["rar_items"]:
             game["rar_items"].remove("telefon")
             game["log"] = rl_dlg("use_telefon", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["log"] = rl_dlg("telefon_think", "rar")
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(3)
+            await rl_edit(context, game); await asyncio.sleep(1.5)
             remaining_list = game["magazine"][game["shot_idx"]:]
             if remaining_list:
                 idx = random.randint(0, len(remaining_list) - 1)
@@ -1014,57 +1025,57 @@ async def _rl_rar_turn_inner(context, game):
         if "lupa" in game["rar_items"] and not game.get("rar_knows"):
             game["rar_items"].remove("lupa")
             game["log"] = rl_dlg("use_lupa", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["rar_knows"] = game["magazine"][game["shot_idx"]]
             game["log"] = rl_dlg("lupa_use", "rar")
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(2)
+            await rl_edit(context, game); await asyncio.sleep(1)
 
         if "sigara" in game["rar_items"] and game["rar_hp"] < game["rar_max_hp"]:
             game["rar_items"].remove("sigara")
             game["log"] = rl_dlg("use_sigara", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["rar_hp"] += 1
             game["log"] = rl_dlg("sigara_use", "rar")
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(2)
+            await rl_edit(context, game); await asyncio.sleep(1)
 
         if "bpatron" in game["rar_items"]:
             game["rar_items"].remove("bpatron")
             game["log"] = rl_dlg("use_bpatron", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["magazine"].insert(game["shot_idx"], "B")
             game["rar_knows"] = "B"
             game["log"] = rl_dlg("bpatron_use", "rar")
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(2)
+            await rl_edit(context, game); await asyncio.sleep(1)
 
         if "nasadka" in game["rar_items"] and not game.get("nasadka_active"):
             game["rar_items"].remove("nasadka")
             game["log"] = rl_dlg("use_nasadka", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["nasadka_active"] = True
             game["log"] = rl_dlg("nasadka_use", "rar")
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(2)
+            await rl_edit(context, game); await asyncio.sleep(1)
 
         if "zerkalo" in game["rar_items"] and not game.get("rar_zerkalo"):
             game["rar_items"].remove("zerkalo")
             game["log"] = rl_dlg("use_zerkalo", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["rar_zerkalo"] = True
             game["log"] = rl_dlg("zerkalo_use", "rar")
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(2)
+            await rl_edit(context, game); await asyncio.sleep(1)
 
         if "pila" in game["rar_items"] and not game.get("pila_active") and game.get("rar_knows") == "B":
             game["rar_items"].remove("pila")
             game["log"] = rl_dlg("use_pila", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["pila_active"] = True
             game["log"] = rl_dlg("pila_use", "rar")
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(2)
+            await rl_edit(context, game); await asyncio.sleep(1)
 
         if "adrenalin" in game["rar_items"]:
             stealable = [it for it in game["player_items"] if it != "adrenalin"]
@@ -1073,10 +1084,10 @@ async def _rl_rar_turn_inner(context, game):
                 game["player_items"].remove(stolen)
                 game["rar_items"].remove("adrenalin")
                 game["log"] = rl_dlg("use_adrenalin", "rar")
-                await rl_edit_wait(context, game); await asyncio.sleep(1)
+                await rl_edit(context, game); await asyncio.sleep(0.5)
                 game["log"] = rl_fmt("adrenalin_take", "rar", предмет=ITEM_NAMES[stolen])
                 game["status"] = "Ход Rar"
-                await rl_edit_wait(context, game); await asyncio.sleep(1)
+                await rl_edit(context, game); await asyncio.sleep(0.5)
                 if stolen == "lupa" and not game.get("rar_knows"):
                     game["rar_knows"] = game["magazine"][game["shot_idx"]]
                 elif stolen == "sigara" and game["rar_hp"] < game["rar_max_hp"]:
@@ -1102,16 +1113,16 @@ async def _rl_rar_turn_inner(context, game):
                     if remaining_list:
                         idx = random.randint(0, len(remaining_list) - 1)
                         game["rar_knows"] = remaining_list[idx]
-                await rl_edit_wait(context, game); await asyncio.sleep(1)
+                await rl_edit(context, game); await asyncio.sleep(0.5)
 
         if "naruch" in game["rar_items"]:
             game["rar_items"].remove("naruch")
             game["log"] = rl_dlg("use_naruch", "rar")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+            await rl_edit(context, game); await asyncio.sleep(0.5)
             game["player_skip"] = True
             game["log"] = "<b>На ваши кисти надеты наручники</b>"
             game["status"] = "Ход Rar"
-            await rl_edit_wait(context, game); await asyncio.sleep(2)
+            await rl_edit(context, game); await asyncio.sleep(1)
 
     knows = game.get("rar_knows")
     under_mirror = game.get("rar_zerkalo", False)
@@ -1130,8 +1141,8 @@ async def _rl_rar_turn_inner(context, game):
 
     game["log"] = rl_dlg("aim_player", "rar") if target == "player" else rl_dlg("aim_self", "rar")
     game["status"] = "Ход Rar"
-    await rl_edit_wait(context, game)
-    await asyncio.sleep(2)
+    await rl_edit(context, game)
+    await asyncio.sleep(1)
 
     shot = game["magazine"][game["shot_idx"]]
     game["shot_idx"] += 1
@@ -1181,7 +1192,7 @@ async def _rl_rar_turn_inner(context, game):
     if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
 
     game["status"] = "Ход Rar"
-    await rl_edit_wait(context, game); await asyncio.sleep(2)
+    await rl_edit(context, game); await asyncio.sleep(1)
 
     reloaded = False
     if game["shot_idx"] >= len(game["magazine"]):
@@ -1196,7 +1207,7 @@ async def _rl_rar_turn_inner(context, game):
         game["player_skip"] = False
         game["log"] = rl_dlg("player_skip", "player")
         game["status"] = "Ход Rar"
-        await rl_edit_wait(context, game); await asyncio.sleep(2)
+        await rl_edit(context, game); await asyncio.sleep(1)
         asyncio.create_task(rl_rar_turn(context, game)); return
 
     game["turn"] = "player"
@@ -1206,7 +1217,7 @@ async def _rl_rar_turn_inner(context, game):
         game["log"] = rl_dlg("low_hp_both", "player")
     elif game["rar_hp"] == 1 and not reloaded:
         game["log"] = rl_dlg("low_hp_rar", "player")
-    await rl_edit_wait(context, game)
+    await rl_edit(context, game)
 
 
 # ==================== ОБРАБОТКА КНОПОК РУЛЕТКИ ====================
@@ -1331,18 +1342,26 @@ async def rl_callback(update, context):
         item = parts[2]; gid = parts[3]
         game = roulette_games.get(gid)
         if not game or game["player_id"] != user_id: return
-        if item not in game["rar_items"]: return
-        if "adrenalin" not in game["player_items"]: return
-        game["player_items"].remove("adrenalin")
-        game["rar_items"].remove(item)
-        game["log"] = rl_dlg("use_adrenalin", "player")
-        await rl_edit_wait(context, game); await asyncio.sleep(1)
-        game["log"] = rl_fmt("adrenalin_take", "player", предмет=ITEM_NAMES[item])
-        await rl_edit_wait(context, game); await asyncio.sleep(1)
-        await rl_apply_stolen_item(context, game, item)
-        if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
-        if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
-        await rl_edit_wait(context, game)
+        
+        # Защита от спама
+        if game.get("_action_lock"): return
+        game["_action_lock"] = True
+        
+        try:
+            if item not in game["rar_items"]: return
+            if "adrenalin" not in game["player_items"]: return
+            game["player_items"].remove("adrenalin")
+            game["rar_items"].remove(item)
+            game["log"] = rl_dlg("use_adrenalin", "player")
+            await rl_edit(context, game); await asyncio.sleep(0.5)
+            game["log"] = rl_fmt("adrenalin_take", "player", предмет=ITEM_NAMES[item])
+            await rl_edit(context, game); await asyncio.sleep(0.5)
+            await rl_apply_stolen_item(context, game, item)
+            if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
+            if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
+            await rl_edit(context, game)
+        finally:
+            game["_action_lock"] = False
         return
 
     if data.startswith("rl_shoot_"):
@@ -1356,96 +1375,102 @@ async def rl_callback(update, context):
             except Exception: pass
             return
         if game["turn"] != "player": return
-        game["turn"] = "rar"
-        game["last_action"] = time.time()
+        if game.get("_action_lock"): return
+        game["_action_lock"] = True
 
-        shot = game["magazine"][game["shot_idx"]]
-        game["shot_idx"] += 1
-        dmg = 2 if (game.get("nasadka_active") or game.get("pila_active")) else 1
-
-        if shot == "B":
-            if target == "self":
-                if game.get("player_zerkalo"):
-                    game["player_zerkalo"] = False
-                    if dmg == 1:
-                        game["rar_hp"] -= 1
-                        game["log"] = rl_dlg("zerkalo_crack", "player")
-                    else:
-                        game["player_hp"] -= 1
-                        game["rar_hp"] -= 2
-                        game["log"] = rl_dlg("zerkalo_break", "player")
-                else:
-                    game["player_hp"] -= dmg
-                    game["log"] = rl_dlg("hit", "player")
-            else:
-                if game.get("rar_zerkalo"):
-                    game["rar_zerkalo"] = False
-                    if dmg == 1:
-                        game["player_hp"] -= 1
-                        game["log"] = rl_dlg("zerkalo_crack", "player")
-                    else:
-                        game["rar_hp"] -= 1
-                        game["player_hp"] -= 2
-                        game["log"] = rl_dlg("zerkalo_break", "player")
-                else:
-                    game["rar_hp"] -= dmg
-                    game["log"] = rl_dlg("hit", "player")
-            if game.get("pila_active"):
-                game["pila_active"] = False
-        else:
-            game["log"] = rl_dlg("blank", "player")
-            if game.get("nasadka_active"):
-                game["nasadka_active"] = False
-                if game.get("player_zerkalo"):
-                    game["player_zerkalo"] = False
-                    game["rar_hp"] -= 1
-                    game["log"] = rl_dlg("nasadka_burst", "player") + "\n" + rl_dlg("zerkalo_crack", "player")
-                else:
-                    game["player_hp"] -= 1
-                    game["log"] = rl_dlg("nasadka_burst", "player")
-            if game.get("pila_active"):
-                game["pila_active"] = False
-
-        if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
-        if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
-
-        reload_needed = game["shot_idx"] >= len(game["magazine"])
-        reloaded = False
-        if reload_needed:
-            bonus = ROUND2_RELOAD_BONUS if game["round"] == 2 else (ROUND3_RELOAD_BONUS if game["round"] == 3 else 0)
+        try:
             game["turn"] = "rar"
-            game["status"] = rl_dlg("reloading", "player")
+            game["last_action"] = time.time()
+
+            shot = game["magazine"][game["shot_idx"]]
+            game["shot_idx"] += 1
+            dmg = 2 if (game.get("nasadka_active") or game.get("pila_active")) else 1
+
+            if shot == "B":
+                if target == "self":
+                    if game.get("player_zerkalo"):
+                        game["player_zerkalo"] = False
+                        if dmg == 1:
+                            game["rar_hp"] -= 1
+                            game["log"] = rl_dlg("zerkalo_crack", "player")
+                        else:
+                            game["player_hp"] -= 1
+                            game["rar_hp"] -= 2
+                            game["log"] = rl_dlg("zerkalo_break", "player")
+                    else:
+                        game["player_hp"] -= dmg
+                        game["log"] = rl_dlg("hit", "player")
+                else:
+                    if game.get("rar_zerkalo"):
+                        game["rar_zerkalo"] = False
+                        if dmg == 1:
+                            game["player_hp"] -= 1
+                            game["log"] = rl_dlg("zerkalo_crack", "player")
+                        else:
+                            game["rar_hp"] -= 1
+                            game["player_hp"] -= 2
+                            game["log"] = rl_dlg("zerkalo_break", "player")
+                    else:
+                        game["rar_hp"] -= dmg
+                        game["log"] = rl_dlg("hit", "player")
+                if game.get("pila_active"):
+                    game["pila_active"] = False
+            else:
+                game["log"] = rl_dlg("blank", "player")
+                if game.get("nasadka_active"):
+                    game["nasadka_active"] = False
+                    if game.get("player_zerkalo"):
+                        game["player_zerkalo"] = False
+                        game["rar_hp"] -= 1
+                        game["log"] = rl_dlg("nasadka_burst", "player") + "\n" + rl_dlg("zerkalo_crack", "player")
+                    else:
+                        game["player_hp"] -= 1
+                        game["log"] = rl_dlg("nasadka_burst", "player")
+                if game.get("pila_active"):
+                    game["pila_active"] = False
+
+            if game["player_hp"] <= 0: await rl_finish(context, game, "rar"); return
+            if game["rar_hp"] <= 0: await rl_finish(context, game, "player"); return
+
+            reload_needed = game["shot_idx"] >= len(game["magazine"])
+            reloaded = False
+            if reload_needed:
+                bonus = ROUND2_RELOAD_BONUS if game["round"] == 2 else (ROUND3_RELOAD_BONUS if game["round"] == 3 else 0)
+                game["turn"] = "rar"
+                game["status"] = rl_dlg("reloading", "player")
+                try:
+                    await rl_edit(context, game)
+                except Exception as e:
+                    print(f"[RL SHOOT EDIT] {e}")
+                await rl_reload_with_items(context, game, bonus)
+                reloaded = True
+
+            if shot == "H" and target == "self":
+                game["turn"] = "player"
+                game["status"] = "Твой ход снова"
+                if not reloaded: game["log"] = ""
+                try:
+                    await rl_edit(context, game)
+                except Exception: pass
+                return
+
+            game["status"] = "Ход Rar"
             try:
-                await rl_edit_wait(context, game)
+                await rl_edit(context, game)
             except Exception as e:
-                print(f"[RL SHOOT EDIT] {e}")
-            await rl_reload_with_items(context, game, bonus)
-            reloaded = True
-
-        if shot == "H" and target == "self":
-            game["turn"] = "player"
-            game["status"] = "Твой ход снова"
-            if not reloaded: game["log"] = ""
+                print(f"[RL SHOOT EDIT2] {e}")
             try:
-                await rl_edit_wait(context, game)
-            except Exception: pass
-            return
-
-        game["status"] = "Ход Rar"
-        try:
-            await rl_edit_wait(context, game)
-        except Exception as e:
-            print(f"[RL SHOOT EDIT2] {e}")
-        try:
-            asyncio.create_task(rl_rar_turn(context, game))
-        except Exception as e:
-            print(f"[RL SHOOT TASK] {e}")
-            game["turn"] = "player"
-            game["status"] = "Твой ход"
-            game["log"] = "<b>Rar запнулась. Ход снова твой.</b>"
-            try:
-                await rl_edit_wait(context, game)
-            except Exception: pass
+                asyncio.create_task(rl_rar_turn(context, game))
+            except Exception as e:
+                print(f"[RL SHOOT TASK] {e}")
+                game["turn"] = "player"
+                game["status"] = "Твой ход"
+                game["log"] = "<b>Rar запнулась. Ход снова твой.</b>"
+                try:
+                    await rl_edit(context, game)
+                except Exception: pass
+        finally:
+            game["_action_lock"] = False
         return
 
     if data.startswith("rl_item_"):
@@ -1459,75 +1484,80 @@ async def rl_callback(update, context):
             except Exception: pass
             return
         if game["turn"] != "player": return
-        if item not in game["player_items"]: return
+        if game.get("_action_lock"): return
+        game["_action_lock"] = True
 
-        use_key = f"use_{item}"
-        if use_key in RL_DIALOGS:
-            game["player_items"].remove(item)
-            game["log"] = rl_dlg(use_key, "player")
-            await rl_edit_wait(context, game); await asyncio.sleep(1)
+        try:
+            if item not in game["player_items"]: return
+            use_key = f"use_{item}"
+            if use_key in RL_DIALOGS:
+                game["player_items"].remove(item)
+                game["log"] = rl_dlg(use_key, "player")
+                await rl_edit(context, game); await asyncio.sleep(0.5)
 
-        if item == "lupa":
-            game["player_knows"] = game["magazine"][game["shot_idx"]]
-            label = "боевой" if game["player_knows"] == "B" else "холостой"
-            game["log"] = rl_fmt("lupa_result", "player", тип=label)
-        elif item == "pila":
-            game["pila_active"] = True
-            game["log"] = rl_dlg("pila_result", "player")
-        elif item == "naruch":
-            game["rar_skip"] = True
-            game["log"] = "<b>Rar пропустит ход.</b>"
-        elif item == "sigara":
-            if game["player_hp"] < game["player_max_hp"]:
-                game["player_hp"] += 1; game["log"] = rl_dlg("sigara_puff", "player")
-            else: game["log"] = "<b>Уже максимум</b>"
-        elif item == "tabletki":
-            if random.randint(1, 2) == 1:
-                game["player_hp"] = min(game["player_max_hp"], game["player_hp"] + 2)
-                game["log"] = rl_dlg("tabletki_good", "player")
-            else:
-                game["player_hp"] -= 1
-                game["log"] = rl_dlg("tabletki_bad", "player")
-        elif item == "telefon":
-            remaining = game["magazine"][game["shot_idx"]:]
-            if remaining:
-                idx = random.randint(0, len(remaining) - 1)
-                p = remaining[idx]
-                label = "боевой" if p == "B" else "холостой"
-                pos = idx + 1
-                game["log"] = rl_fmt("telefon_anim", "player", N=pos, тип=label)
-                await rl_edit_wait(context, game); await asyncio.sleep(3)
-                game["log"] = rl_dlg("telefon_dead", "player")
-                await rl_edit_wait(context, game); await asyncio.sleep(2)
-                game["player_knows"] = p
-            else:
-                game["log"] = rl_dlg("empty", "player")
-        elif item == "bpatron":
-            game["magazine"].insert(game["shot_idx"], "B")
-            game["log"] = rl_dlg("bpatron_use", "player")
-        elif item == "nasadka":
-            game["nasadka_active"] = True
-            game["log"] = rl_dlg("nasadka_use", "player")
-        elif item == "zerkalo":
-            game["player_zerkalo"] = True
-            game["log"] = rl_dlg("zerkalo_use", "player")
-        elif item == "adrenalin":
-            stealable = [it for it in game["rar_items"] if it != "adrenalin"]
-            if not stealable:
-                game["log"] = rl_dlg("rar_no_items", "player")
-                await rl_edit_wait(context, game); return
-            rows = []
-            for it in stealable:
-                rows.append([InlineKeyboardButton(ITEM_NAMES[it], callback_data=f"rl_adr_{it}_{gid}")])
-            rows.append([InlineKeyboardButton(RL_BUTTONS["cancel"], callback_data=f"rl_adr_cancel_{gid}")])
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=game["chat_id"], message_id=game["msg_id"],
-                    text=rl_render(game) + "\n\n<b>" + RL_START_DIALOGS["pick_item"] + "</b>", parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(rows))
-            except Exception: pass
-            return
-        await rl_edit_wait(context, game)
+            if item == "lupa":
+                game["player_knows"] = game["magazine"][game["shot_idx"]]
+                label = "боевой" if game["player_knows"] == "B" else "холостой"
+                game["log"] = rl_fmt("lupa_result", "player", тип=label)
+            elif item == "pila":
+                game["pila_active"] = True
+                game["log"] = rl_dlg("pila_result", "player")
+            elif item == "naruch":
+                game["rar_skip"] = True
+                game["log"] = "<b>Rar пропустит ход.</b>"
+            elif item == "sigara":
+                if game["player_hp"] < game["player_max_hp"]:
+                    game["player_hp"] += 1; game["log"] = rl_dlg("sigara_puff", "player")
+                else: game["log"] = "<b>Уже максимум</b>"
+            elif item == "tabletki":
+                if random.randint(1, 2) == 1:
+                    game["player_hp"] = min(game["player_max_hp"], game["player_hp"] + 2)
+                    game["log"] = rl_dlg("tabletki_good", "player")
+                else:
+                    game["player_hp"] -= 1
+                    game["log"] = rl_dlg("tabletki_bad", "player")
+            elif item == "telefon":
+                remaining = game["magazine"][game["shot_idx"]:]
+                if remaining:
+                    idx = random.randint(0, len(remaining) - 1)
+                    p = remaining[idx]
+                    label = "боевой" if p == "B" else "холостой"
+                    pos = idx + 1
+                    game["log"] = rl_fmt("telefon_anim", "player", N=pos, тип=label)
+                    await rl_edit(context, game); await asyncio.sleep(1.5)
+                    game["log"] = rl_dlg("telefon_dead", "player")
+                    await rl_edit(context, game); await asyncio.sleep(1)
+                    game["player_knows"] = p
+                else:
+                    game["log"] = rl_dlg("empty", "player")
+            elif item == "bpatron":
+                game["magazine"].insert(game["shot_idx"], "B")
+                game["log"] = rl_dlg("bpatron_use", "player")
+            elif item == "nasadka":
+                game["nasadka_active"] = True
+                game["log"] = rl_dlg("nasadka_use", "player")
+            elif item == "zerkalo":
+                game["player_zerkalo"] = True
+                game["log"] = rl_dlg("zerkalo_use", "player")
+            elif item == "adrenalin":
+                stealable = [it for it in game["rar_items"] if it != "adrenalin"]
+                if not stealable:
+                    game["log"] = rl_dlg("rar_no_items", "player")
+                    await rl_edit(context, game); return
+                rows = []
+                for it in stealable:
+                    rows.append([InlineKeyboardButton(ITEM_NAMES[it], callback_data=f"rl_adr_{it}_{gid}")])
+                rows.append([InlineKeyboardButton(RL_BUTTONS["cancel"], callback_data=f"rl_adr_cancel_{gid}")])
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=game["chat_id"], message_id=game["msg_id"],
+                        text=rl_render(game) + "\n\n<b>" + RL_START_DIALOGS["pick_item"] + "</b>", parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(rows))
+                except Exception: pass
+                return
+            await rl_edit(context, game)
+        finally:
+            game["_action_lock"] = False
         return
 
 
