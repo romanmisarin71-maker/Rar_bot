@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from aiohttp import web
 from telegram import (Update, InlineQueryResultCachedAudio, InlineQueryResultArticle,
     InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions)
+from telegram.error import RetryAfter
 from telegram.ext import (Application, CommandHandler, MessageHandler, ChatMemberHandler,
     InlineQueryHandler, ChosenInlineResultHandler, CallbackQueryHandler, filters, ContextTypes)
 
@@ -69,6 +70,7 @@ PERM_NAMES_RU = {
 
 roulette_games = {}
 ROULETTE_TIMEOUT = 900
+_roulette_locks = {}
 
 ITEM_NAMES = {
     "lupa": "Лупа", "pila": "Пила", "naruch": "Наручники", "sigara": "Сигарета",
@@ -435,7 +437,6 @@ def set_admin_rank(chat_id, user_id, rank, by_user):
 
 
 async def safe_promote(context, chat_id, target_id, wanted):
-    """Выдаёт только те права, которые есть у бота. (ok, granted, skipped, err)"""
     try:
         bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
     except Exception as e:
@@ -704,6 +705,17 @@ async def rl_edit(context, game):
         print(f"[RL EDIT ERROR] {e}")
 
 
+async def rl_edit_bot(bot, game):
+    try:
+        game["last_action"] = time.time()
+        await bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"], text=rl_render(game), parse_mode="HTML", reply_markup=rl_keyboard(game))
+    except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" in err:
+            return
+        print(f"[RL EDIT BOT ERROR] {e}")
+
+
 async def rl_finish(context, game, winner):
     game["finished"] = True
     game["turn"] = "finished"
@@ -803,20 +815,36 @@ async def rl_reload(context, game):
 async def rl_start(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    for existing_game in roulette_games.values():
-        if existing_game["chat_id"] == chat_id and existing_game["player_id"] == user_id and not existing_game.get("finished"):
-            await update.message.reply_text("У тебя уже идёт игра. Закончи её, прежде чем начать новую.")
+    if chat_id not in _roulette_locks:
+        _roulette_locks[chat_id] = asyncio.Lock()
+    async with _roulette_locks[chat_id]:
+        # Удаляем старые незаконченные игры этого игрока в этом чате
+        old_games = [(gid, g) for gid, g in roulette_games.items() if g["chat_id"] == chat_id and g["player_id"] == user_id and not g.get("finished")]
+        for old_gid, old_game in old_games:
+            try:
+                await context.bot.delete_message(chat_id=old_game["chat_id"], message_id=old_game["msg_id"])
+            except Exception: pass
+            roulette_games.pop(old_gid, None)
+
+        gid = uuid.uuid4().hex[:16]
+        cfg = rl_round_config(1)
+        count = random.randint(3, 8)
+        mag, bullets, blanks = rl_make_magazine(count)
+        game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
+        try:
+            msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try:
+                msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
+            except Exception:
+                return
+        except Exception:
             return
-    gid = uuid.uuid4().hex[:16]
-    cfg = rl_round_config(1)
-    count = random.randint(3, 8)
-    mag, bullets, blanks = rl_make_magazine(count)
-    game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
-    msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
-    game["msg_id"] = msg.message_id
-    game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
-    await rl_edit(context, game)
-    roulette_games[gid] = game
+        game["msg_id"] = msg.message_id
+        game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
+        await rl_edit(context, game)
+        roulette_games[gid] = game
 
 
 async def rl_round2_start(context, gid, chat_id):
@@ -881,7 +909,9 @@ async def rl_rar_turn(context, game):
             game["turn"] = "player"
             game["status"] = "Твой ход"
             game["log"] = "<b>Rar запнулась. Ход снова твой.</b>"
-            await rl_edit(context, game)
+            try:
+                await rl_edit(context, game)
+            except Exception: pass
 
 
 async def _rl_rar_turn_inner(context, game):
@@ -1035,7 +1065,7 @@ async def _rl_rar_turn_inner(context, game):
             game["log"] = rl_dlg("use_naruch", "rar")
             await rl_edit(context, game); await asyncio.sleep(1)
             game["player_skip"] = True
-            game["log"] = "<b>Rar пропустит ход.</b>"
+            game["log"] = "<b>На ваши кисти надеты наручники</b>"
             game["status"] = "Ход Rar"
             await rl_edit(context, game); await asyncio.sleep(2)
 
@@ -1336,7 +1366,10 @@ async def rl_callback(update, context):
             bonus = ROUND2_RELOAD_BONUS if game["round"] == 2 else (ROUND3_RELOAD_BONUS if game["round"] == 3 else 0)
             game["turn"] = "rar"
             game["status"] = rl_dlg("reloading", "player")
-            await rl_edit(context, game)
+            try:
+                await rl_edit(context, game)
+            except Exception as e:
+                print(f"[RL SHOOT EDIT] {e}")
             await rl_reload_with_items(context, game, bonus)
             reloaded = True
 
@@ -1344,12 +1377,26 @@ async def rl_callback(update, context):
             game["turn"] = "player"
             game["status"] = "Твой ход снова"
             if not reloaded: game["log"] = ""
-            await rl_edit(context, game)
+            try:
+                await rl_edit(context, game)
+            except Exception: pass
             return
 
         game["status"] = "Ход Rar"
-        await rl_edit(context, game)
-        asyncio.create_task(rl_rar_turn(context, game))
+        try:
+            await rl_edit(context, game)
+        except Exception as e:
+            print(f"[RL SHOOT EDIT2] {e}")
+        try:
+            asyncio.create_task(rl_rar_turn(context, game))
+        except Exception as e:
+            print(f"[RL SHOOT TASK] {e}")
+            game["turn"] = "player"
+            game["status"] = "Твой ход"
+            game["log"] = "<b>Rar запнулась. Ход снова твой.</b>"
+            try:
+                await rl_edit(context, game)
+            except Exception: pass
         return
 
     if data.startswith("rl_item_"):
@@ -1454,6 +1501,29 @@ async def rl_timeout_loop(app):
                     game["active"] = False
                     duel_games.pop(gid, None)
         except Exception: pass
+        await asyncio.sleep(30)
+
+
+async def rl_stuck_watchdog(app):
+    """Если turn='rar' > 60 сек — возвращает ход игроку."""
+    await asyncio.sleep(120)
+    while True:
+        try:
+            now = time.time()
+            for gid, game in list(roulette_games.items()):
+                if game.get("finished"): continue
+                if game.get("turn") != "rar": continue
+                last = game.get("last_action", 0)
+                if now - last > 60:
+                    print(f"[RL WATCHDOG] game {gid} stuck on rar turn, fixing")
+                    game["turn"] = "player"
+                    game["status"] = "Твой ход"
+                    game["log"] = "<b>Rar запнулась. Ход снова твой.</b>"
+                    try:
+                        await rl_edit_bot(app.bot, game)
+                    except Exception: pass
+        except Exception as e:
+            print(f"[RL WATCHDOG ERROR] {e}")
         await asyncio.sleep(30)
 
 def save_track_to_db(file_id, title, added_by):
@@ -2098,7 +2168,13 @@ async def handle_message(update, context):
                 target_user = await resolve_user_from_arg(context, chat_id, parts[0])
                 rest = parts[1] if len(parts) > 1 else ""
         if not target_user:
-            await update.message.reply_text(SLEUTH_DIALOGS["no_active_on_user"]); return
+            target_arg_check = args_raw.split()[0] if args_raw.split() and args_raw.split()[0].startswith("@") else "пользователя"
+            await update.message.reply_text(
+                f"Не нашла {html_escape(target_arg_check)}.\n\n"
+                f"Возможно, он ещё ни разу не писал в чат после добавления Rar, "
+                f"или указан неверно.\n\n"
+                f"👉 Попроси его написать любое сообщение в чат, или используй <b>reply</b> на его сообщение."
+            , parse_mode="HTML"); return
         target_creator = await get_chat_creator(chat_id, context)
         if target_creator and target_user.id == target_creator:
             await update.message.reply_text(SLEUTH_DIALOGS["protect_creator"]); return
@@ -2234,10 +2310,8 @@ async def handle_message(update, context):
         wanted = RANK_PERMS.get(new_rank, RANK_PERMS[RANK_NONE])
         ok, granted, skipped, err = await safe_promote(context, chat_id, target_user.id, wanted)
 
-        # Ранг в БД — всегда
         set_admin_rank(chat_id, target_user.id, new_rank, user_id)
 
-        # Тихий лог в ЛС — только при skipped/ошибке
         if not ok or skipped:
             target_disp = f"{html_escape(target_user.first_name)} [ID: {target_user.id}]"
             if not ok:
@@ -2270,7 +2344,6 @@ async def handle_message(update, context):
                     except Exception: pass
                 await log_to_owner(context, f"[PROMOTE PARTIAL] chat={chat_id} target={target_user.id} skipped={skipped}")
 
-        # В чат — всегда одно и то же
         await update.message.reply_text(ADMIN_DIALOGS["rank_changed"].format(имя=html_escape(target_user.first_name), ранг=RANK_NAMES.get(new_rank, 'не админ')))
         return
 
@@ -2954,6 +3027,11 @@ async def keep_database_alive():
 
 
 async def error_handler(update, context):
+    if isinstance(context.error, RetryAfter):
+        wait = context.error.retry_after
+        print(f"[FLOOD CONTROL] Retry after {wait}s")
+        await asyncio.sleep(wait + 1)
+        return
     err_text = str(context.error)
     tb = "".join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))[:1500]
     print(f"[ERROR HANDLER] {err_text}\n{tb}")
@@ -2990,6 +3068,7 @@ async def on_startup(application):
     asyncio.create_task(keep_database_alive())
     asyncio.create_task(daily_track_loop(application))
     asyncio.create_task(rl_timeout_loop(application))
+    asyncio.create_task(rl_stuck_watchdog(application))
     asyncio.create_task(sleuth_deadline_loop(application))
 
 
