@@ -71,6 +71,7 @@ PERM_NAMES_RU = {
 roulette_games = {}
 ROULETTE_TIMEOUT = 900
 _roulette_locks = {}
+_rl_edit_queue = asyncio.Queue()
 
 ITEM_NAMES = {
     "lupa": "Лупа", "pila": "Пила", "naruch": "Наручники", "sigara": "Сигарета",
@@ -694,26 +695,48 @@ def rl_keyboard(game):
     return InlineKeyboardMarkup(rows) if rows else None
 
 
+async def _rl_edit_worker(bot):
+    print("[RL EDIT WORKER] Запущен")
+    while True:
+        try:
+            game = await _rl_edit_queue.get()
+            if game["gid"] not in roulette_games:
+                _rl_edit_queue.task_done()
+                continue
+            try:
+                await bot.edit_message_text(
+                    chat_id=game["chat_id"], message_id=game["msg_id"],
+                    text=rl_render(game), parse_mode="HTML",
+                    reply_markup=rl_keyboard(game))
+            except RetryAfter as e:
+                print(f"[RL EDIT WORKER] Flood control, ждем {e.retry_after} сек...")
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    await bot.edit_message_text(
+                        chat_id=game["chat_id"], message_id=game["msg_id"],
+                        text=rl_render(game), parse_mode="HTML",
+                        reply_markup=rl_keyboard(game))
+                except Exception as e2:
+                    print(f"[RL EDIT WORKER] Ошибка после ожидания: {e2}")
+            except Exception as e:
+                err = str(e).lower()
+                if "message is not modified" not in err:
+                    print(f"[RL EDIT WORKER] Ошибка: {e}")
+            _rl_edit_queue.task_done()
+            await asyncio.sleep(0.15)
+        except Exception as e:
+            print(f"[RL EDIT WORKER FATAL] {e}")
+            await asyncio.sleep(1)
+
+
 async def rl_edit(context, game):
-    try:
-        game["last_action"] = time.time()
-        await context.bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"], text=rl_render(game), parse_mode="HTML", reply_markup=rl_keyboard(game))
-    except Exception as e:
-        err = str(e).lower()
-        if "message is not modified" in err:
-            return
-        print(f"[RL EDIT ERROR] {e}")
+    game["last_action"] = time.time()
+    await _rl_edit_queue.put(game)
 
 
 async def rl_edit_bot(bot, game):
-    try:
-        game["last_action"] = time.time()
-        await bot.edit_message_text(chat_id=game["chat_id"], message_id=game["msg_id"], text=rl_render(game), parse_mode="HTML", reply_markup=rl_keyboard(game))
-    except Exception as e:
-        err = str(e).lower()
-        if "message is not modified" in err:
-            return
-        print(f"[RL EDIT BOT ERROR] {e}")
+    game["last_action"] = time.time()
+    await _rl_edit_queue.put(game)
 
 
 async def rl_finish(context, game, winner):
@@ -818,7 +841,6 @@ async def rl_start(update, context):
     if chat_id not in _roulette_locks:
         _roulette_locks[chat_id] = asyncio.Lock()
     async with _roulette_locks[chat_id]:
-        # Удаляем старые незаконченные игры этого игрока в этом чате
         old_games = [(gid, g) for gid, g in roulette_games.items() if g["chat_id"] == chat_id and g["player_id"] == user_id and not g.get("finished")]
         for old_gid, old_game in old_games:
             try:
@@ -843,8 +865,8 @@ async def rl_start(update, context):
             return
         game["msg_id"] = msg.message_id
         game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
-        await rl_edit(context, game)
         roulette_games[gid] = game
+        await rl_edit(context, game)
 
 
 async def rl_round2_start(context, gid, chat_id):
@@ -1217,7 +1239,12 @@ async def rl_apply_stolen_item(context, game, item):
 
 async def rl_callback(update, context):
     q = update.callback_query
-    try: await q.answer()
+    try:
+        await q.answer()
+    except RetryAfter as e:
+        await asyncio.sleep(e.retry_after + 1)
+        try: await q.answer()
+        except Exception: pass
     except Exception: pass
     data = q.data
     user_id = q.from_user.id
@@ -1505,7 +1532,6 @@ async def rl_timeout_loop(app):
 
 
 async def rl_stuck_watchdog(app):
-    """Если turn='rar' > 60 сек — возвращает ход игроку."""
     await asyncio.sleep(120)
     while True:
         try:
@@ -1524,7 +1550,7 @@ async def rl_stuck_watchdog(app):
                     except Exception: pass
         except Exception as e:
             print(f"[RL WATCHDOG ERROR] {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(30)   
 
 def save_track_to_db(file_id, title, added_by):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -3070,6 +3096,7 @@ async def on_startup(application):
     asyncio.create_task(rl_timeout_loop(application))
     asyncio.create_task(rl_stuck_watchdog(application))
     asyncio.create_task(sleuth_deadline_loop(application))
+    asyncio.create_task(_rl_edit_worker(application.bot)) # <--- НОВАЯ СТРОКА
 
 
 def main():
