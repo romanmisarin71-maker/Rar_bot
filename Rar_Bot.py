@@ -1,4 +1,6 @@
-import os, random, re, time, asyncio, traceback, psycopg2, uuid
+import os, random, re, time, asyncio, traceback, psycopg2, uuid, threading
+from psycopg2 import pool as pg_pool
+from psycopg2.extensions import STATUS_READY
 from collections import OrderedDict
 from html import escape as html_escape
 from urllib.parse import urlparse
@@ -70,10 +72,10 @@ PERM_NAMES_RU = {
 
 roulette_games = {}
 ROULETTE_TIMEOUT = 900
+RL_NEXT_ROUND_TIMEOUT = 180  # сколько ждём «следующий раунд», прежде чем освободить слот
 _roulette_locks = {}
 
-# Очереди для каждого чата
-_rl_edit_queues = {}
+# Воркеры правок для каждого чата
 _rl_edit_tasks = {}
 
 ITEM_NAMES = {
@@ -360,10 +362,86 @@ _recent_greets = {}
 GREET_DEDUP_TTL = 5
 
 
-def get_db_connection():
+# ───── Пул соединений с БД ─────
+# Раньше на КАЖДЫЙ запрос открывалось новое SSL-соединение (сотни мс), и всё это блокировало
+# event loop бота. Теперь соединения переиспользуются, интерфейс (cursor/commit/close) тот же.
+_db_pool = None
+_db_pool_lock = threading.Lock()
+_db_last_used = {}
+DB_POOL_MAX = 10
+DB_STALE_AFTER = 20  # если соединение простаивало дольше — проверяем его перед использованием
+
+
+def _db_connect_raw():
     result = urlparse(DATABASE_URL)
     return psycopg2.connect(database=result.path[1:], user=result.username,
-        password=result.password, host=result.hostname, port=result.port, sslmode='require')
+        password=result.password, host=result.hostname, port=result.port, sslmode='require',
+        keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
+
+
+def _get_pool():
+    global _db_pool
+    if _db_pool is None:
+        with _db_pool_lock:
+            if _db_pool is None:
+                result = urlparse(DATABASE_URL)
+                _db_pool = pg_pool.ThreadedConnectionPool(1, DB_POOL_MAX,
+                    database=result.path[1:], user=result.username, password=result.password,
+                    host=result.hostname, port=result.port, sslmode='require',
+                    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
+    return _db_pool
+
+
+class _PooledConn:
+    """Обёртка: close() возвращает соединение в пул, а не закрывает его."""
+    def __init__(self, conn):
+        self._conn = conn
+        self._released = False
+
+    def cursor(self, *a, **k): return self._conn.cursor(*a, **k)
+    def commit(self): self._conn.commit()
+    def rollback(self): self._conn.rollback()
+    def __getattr__(self, name): return getattr(self._conn, name)
+
+    def close(self):
+        if self._released: return
+        self._released = True
+        conn = self._conn
+        try:
+            if conn.closed:
+                _db_pool.putconn(conn, close=True)
+            else:
+                if conn.status != STATUS_READY:
+                    conn.rollback()
+                _db_last_used[id(conn)] = time.time()
+                _db_pool.putconn(conn)
+        except Exception:
+            try: _db_pool.putconn(conn, close=True)
+            except Exception: pass
+
+    def __del__(self):
+        # если где-то забыли close() (например, из-за исключения) — вернём соединение в пул
+        try: self.close()
+        except Exception: pass
+
+
+def get_db_connection():
+    try:
+        pool = _get_pool()
+        conn = pool.getconn()
+    except pg_pool.PoolError:
+        return _db_connect_raw()  # пул занят — запасное прямое соединение
+    now = time.time()
+    if conn.closed or now - _db_last_used.get(id(conn), 0) > DB_STALE_AFTER:
+        try:
+            if conn.closed: raise psycopg2.OperationalError("closed")
+            cur = conn.cursor(); cur.execute("SELECT 1"); cur.close(); conn.rollback()
+        except Exception:
+            try: pool.putconn(conn, close=True)
+            except Exception: pass
+            conn = pool.getconn()
+    _db_last_used[id(conn)] = now
+    return _PooledConn(conn)
 
 
 def init_db():
@@ -385,12 +463,19 @@ def init_db():
     conn.commit(); cursor.close(); conn.close()
 
 
+_username_cache = {}
+
+
 def save_username(user_id, username):
     if not username: return
+    uname = username.lower()
+    if _username_cache.get(user_id) == uname: return  # не пишем в БД на каждое сообщение
     try:
         conn = get_db_connection(); cursor = conn.cursor()
-        cursor.execute("INSERT INTO usernames (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username", (user_id, username.lower()))
+        cursor.execute("INSERT INTO usernames (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username", (user_id, uname))
         conn.commit(); cursor.close(); conn.close()
+        if len(_username_cache) > 20000: _username_cache.clear()
+        _username_cache[user_id] = uname
     except Exception: pass
 
 
@@ -494,12 +579,33 @@ def set_kall_enabled(chat_id, val):
     conn.commit(); cursor.close(); conn.close()
 
 
+_sleuth_chats = set()
+_sleuth_chats_ts = 0
+
+
+def sleuth_chat_has_any(chat_id):
+    """Есть ли в чате активные слежки (кэш на 60 сек), чтобы не лезть в БД на каждое сообщение."""
+    global _sleuth_chats, _sleuth_chats_ts
+    now = time.time()
+    if now - _sleuth_chats_ts > 60:
+        try:
+            conn = get_db_connection(); cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT chat_id FROM sleuths")
+            _sleuth_chats = {r[0] for r in cursor.fetchall()}
+            cursor.close(); conn.close()
+            _sleuth_chats_ts = now
+        except Exception:
+            return True
+    return chat_id in _sleuth_chats
+
+
 def sleuth_create(chat_id, target_id, target_name, admin_id, admin_name, required_count, duration_seconds, action):
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("DELETE FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, target_id))
     deadline_ts = time.time() + duration_seconds
     cursor.execute("INSERT INTO sleuths (chat_id, target_id, target_name, admin_id, admin_name, required_count, current_count, duration_seconds, action, deadline) VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, TO_TIMESTAMP(%s))", (chat_id, target_id, target_name, admin_id, admin_name, required_count, duration_seconds, action, deadline_ts))
     conn.commit(); cursor.close(); conn.close()
+    _sleuth_chats.add(chat_id)
 
 
 def sleuth_get(chat_id, target_id):
@@ -517,7 +623,9 @@ def sleuth_get_all(chat_id):
 def sleuth_delete(chat_id, target_id):
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("DELETE FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, target_id))
+    deleted = cursor.rowcount
     conn.commit(); cursor.close(); conn.close()
+    return deleted
 
 
 def sleuth_delete_by_id(sid):
@@ -556,7 +664,6 @@ async def check_user_rank(update, context, chat_id, user_id, required_rank):
     if rank < required_rank:
         await update.message.reply_text(ADMIN_DIALOGS["no_rights"]); return False
     return True
-
 
 # ==================== ДУЭЛЬ ====================
 
@@ -698,75 +805,121 @@ def rl_keyboard(game):
     return InlineKeyboardMarkup(rows) if rows else None
 
 
-async def _rl_edit_worker_for_chat(bot, chat_id):
-    queue = _rl_edit_queues[chat_id]
-    while True:
+# ───── Очередь правок рулетки (по одной на чат, с объединением правок) ─────
+# Для каждой игры в очереди хранится только ОДНА ожидающая правка (актуальное состояние),
+# поэтому анимации с sleep не забивают очередь и не упираются в лимиты Telegram.
+_rl_pending = {}   # chat_id -> {gid: [futures]}
+_rl_events = {}    # chat_id -> asyncio.Event
+
+
+MAX_CHAT_ROULETTES = 3
+_rl_penalty = {}   # chat_id -> добавочная пауза после flood-control от Telegram
+
+
+def _rl_chat_slots(chat_id, exclude_user=None):
+    """Сколько «слотов» рулетки занято в чате: идущие игры и игры, ждущие решения о следующем раунде."""
+    n = 0
+    for g in roulette_games.values():
+        if g["chat_id"] != chat_id: continue
+        if exclude_user is not None and g["player_id"] == exclude_user: continue
+        if not g.get("finished") or g.get("awaiting_next"): n += 1
+    return n
+
+
+def _rl_interval(chat_id):
+    # Один игрок — почти без задержки (красивые анимации). Больше игроков или были
+    # flood-control — пауза растёт, лишние промежуточные кадры склеиваются (скип).
+    active = _rl_chat_slots(chat_id)
+    return 0.45 + 0.5 * max(0, active - 1) + _rl_penalty.get(chat_id, 0)
+
+
+async def _rl_do_edit(bot, game):
+    chat_id = game["chat_id"]
+    for attempt in range(2):
         try:
-            task_data = await queue.get()
-            game, future = task_data
-            
-            if game["gid"] not in roulette_games:
-                if future: future.set_result(None)
-                queue.task_done()
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=game["msg_id"],
+                text=rl_render(game), parse_mode="HTML",
+                reply_markup=rl_keyboard(game))
+            _rl_penalty[chat_id] = max(0.0, _rl_penalty.get(chat_id, 0.0) - 0.05)
+            return
+        except RetryAfter as e:
+            _rl_penalty[chat_id] = min(2.5, _rl_penalty.get(chat_id, 0.0) + 0.4)
+            print(f"[RL WORKER {chat_id}] Flood control, ждем {e.retry_after} сек...")
+            await asyncio.sleep(e.retry_after + 1)
+        except Exception as e:
+            err = str(e).lower()
+            if "message to edit not found" in err or "message can't be edited" in err or "chat not found" in err:
+                # сообщение удалили — игра больше не нужна, освобождаем слот в чате
+                roulette_games.pop(game["gid"], None)
+            elif "message is not modified" not in err:
+                print(f"[RL WORKER {chat_id}] Ошибка: {e}")
+            return
+
+
+async def _rl_edit_worker_for_chat(bot, chat_id):
+    pending = _rl_pending[chat_id]
+    event = _rl_events[chat_id]
+    while True:
+        futures = []
+        try:
+            await event.wait()
+            if not pending:
+                event.clear()
                 continue
-                
-            try:
-                await bot.edit_message_text(
-                    chat_id=game["chat_id"], message_id=game["msg_id"],
-                    text=rl_render(game), parse_mode="HTML",
-                    reply_markup=rl_keyboard(game))
-            except RetryAfter as e:
-                print(f"[RL WORKER {chat_id}] Flood control, ждем {e.retry_after} сек...")
-                await asyncio.sleep(e.retry_after + 1)
-                try:
-                    await bot.edit_message_text(
-                        chat_id=game["chat_id"], message_id=game["msg_id"],
-                        text=rl_render(game), parse_mode="HTML",
-                        reply_markup=rl_keyboard(game))
-                except Exception as e2:
-                    print(f"[RL WORKER {chat_id}] Ошибка: {e2}")
-            except Exception as e:
-                err = str(e).lower()
-                if "message is not modified" not in err:
-                    print(f"[RL WORKER {chat_id}] Ошибка: {e}")
-            
-            if future: future.set_result(None)
-            queue.task_done()
-            await asyncio.sleep(0.1)
+            gid = next(iter(pending))          # самая давняя ожидающая игра (по кругу)
+            futures = pending.pop(gid)
+            if not pending:
+                event.clear()
+            game = roulette_games.get(gid)     # всегда берём АКТУАЛЬНЫЙ объект игры
+            if game and not game.get("finished"):
+                await _rl_do_edit(bot, game)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             print(f"[RL WORKER FATAL {chat_id}] {e}")
             await asyncio.sleep(1)
+        finally:
+            for f in futures:
+                if not f.done():
+                    f.set_result(None)
+        await asyncio.sleep(_rl_interval(chat_id))
 
-def _get_chat_queue(chat_id, bot):
-    if chat_id not in _rl_edit_queues:
-        _rl_edit_queues[chat_id] = asyncio.Queue()
+
+def _rl_enqueue(bot, game, future=None):
+    chat_id = game["chat_id"]
+    if chat_id not in _rl_pending:
+        _rl_pending[chat_id] = {}
+        _rl_events[chat_id] = asyncio.Event()
         _rl_edit_tasks[chat_id] = asyncio.create_task(_rl_edit_worker_for_chat(bot, chat_id))
-    return _rl_edit_queues[chat_id]
+    waiters = _rl_pending[chat_id].setdefault(game["gid"], [])
+    if future is not None:
+        waiters.append(future)
+    _rl_events[chat_id].set()
+
 
 async def rl_edit(context, game):
     game["last_action"] = time.time()
-    if not game.get("_in_queue"):
-        game["_in_queue"] = True
-        queue = _get_chat_queue(game["chat_id"], context.bot)
-        await queue.put((game, None))
+    _rl_enqueue(context.bot, game)
+
 
 async def rl_edit_wait(context, game):
     game["last_action"] = time.time()
-    queue = _get_chat_queue(game["chat_id"], context.bot)
     future = asyncio.get_running_loop().create_future()
-    await queue.put((game, future))
+    _rl_enqueue(context.bot, game, future)
     await future
+
 
 async def rl_edit_bot(bot, game):
     game["last_action"] = time.time()
-    if not game.get("_in_queue"):
-        game["_in_queue"] = True
-        queue = _get_chat_queue(game["chat_id"], bot)
-        await queue.put((game, None))
+    _rl_enqueue(bot, game)
 
 
 async def rl_finish(context, game, winner):
     game["finished"] = True
+    game["last_action"] = time.time()
+    game["awaiting_next"] = (winner == "player" and game["round"] < 3)
+    _rl_pending.get(game["chat_id"], {}).pop(game["gid"], None)
     game["turn"] = "finished"
     game["status"] = ""
     if winner == "player":
@@ -788,6 +941,7 @@ async def rl_finish(context, game, winner):
 async def rl_offer_round2(context, gid, chat_id):
     game = roulette_games.get(gid)
     if not game: return
+    game["last_action"] = time.time()
     game["log"] = RL_START_DIALOGS["offer_round2"]
     game["status"] = ""
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(RL_BUTTONS["round2"], callback_data=f"rl_r2_{gid}"), InlineKeyboardButton(RL_BUTTONS["no"], callback_data=f"rl_close_{gid}")]])
@@ -799,6 +953,7 @@ async def rl_offer_round2(context, gid, chat_id):
 async def rl_offer_round3(context, gid, chat_id):
     game = roulette_games.get(gid)
     if not game: return
+    game["last_action"] = time.time()
     game["log"] = RL_START_DIALOGS["offer_round3"]
     game["status"] = ""
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(RL_BUTTONS["round3"], callback_data=f"rl_r3_{gid}"), InlineKeyboardButton(RL_BUTTONS["no"], callback_data=f"rl_close_{gid}")]])
@@ -864,17 +1019,16 @@ async def rl_reload(context, game):
 async def rl_start(update, context):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    
+
     if chat_id not in _roulette_locks:
         _roulette_locks[chat_id] = asyncio.Lock()
     async with _roulette_locks[chat_id]:
-        # Максимум 3 игры в чате
-        active_chat_games = [g for g in roulette_games.values() if g["chat_id"] == chat_id and not g.get("finished")]
-        if len(active_chat_games) >= 3:
-            await update.message.reply_text("В этом чате уже играют 3 рулетки. Дождитесь окончания хотя бы одной.")
+        # Лимит рулеток в чате (свою старую игру игрок может заменить новой)
+        if _rl_chat_slots(chat_id, exclude_user=user_id) >= MAX_CHAT_ROULETTES:
+            await update.message.reply_text(f"В этом чате уже идут {MAX_CHAT_ROULETTES} рулетки. Дождитесь окончания одной из них.")
             return
 
-        old_games = [(gid, g) for gid, g in roulette_games.items() if g["chat_id"] == chat_id and g["player_id"] == user_id and not g.get("finished")]
+        old_games = [(gid, g) for gid, g in roulette_games.items() if g["chat_id"] == chat_id and g["player_id"] == user_id and (not g.get("finished") or g.get("awaiting_next"))]
         for old_gid, old_game in old_games:
             try:
                 await context.bot.delete_message(chat_id=old_game["chat_id"], message_id=old_game["msg_id"])
@@ -885,7 +1039,7 @@ async def rl_start(update, context):
         cfg = rl_round_config(1)
         count = random.randint(3, 8)
         mag, bullets, blanks = rl_make_magazine(count)
-        game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time(), "_in_queue": False}
+        game = {"gid": gid, "chat_id": chat_id, "player_id": user_id, "msg_id": None, "round": 1, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Твой ход", "finished": False, "last_action": time.time()}
         try:
             msg = await update.message.reply_text(rl_render(game), parse_mode="HTML")
         except RetryAfter as e:
@@ -899,7 +1053,7 @@ async def rl_start(update, context):
         game["msg_id"] = msg.message_id
         game["log"] = rl_fmt("reload_info", "player", N=blanks, M=bullets)
         roulette_games[gid] = game
-        await rl_edit_wait(context, game)
+        await rl_edit(context, game)
 
 
 async def rl_round2_start(context, gid, chat_id):
@@ -911,7 +1065,7 @@ async def rl_round2_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time(), "_in_queue": False}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 2, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
     roulette_games[gid] = game
     game["log"] = RL_START_DIALOGS["box_appears"]
     await rl_edit(context, game); await asyncio.sleep(0.5)
@@ -937,7 +1091,7 @@ async def rl_round3_start(context, gid, chat_id):
     mag, bullets, blanks = rl_make_magazine(count)
     p_items = rl_generate_items(cfg["pool"], cfg["items"])
     r_items = rl_generate_items(cfg["pool"], cfg["items"])
-    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time(), "_in_queue": False}
+    game = {"gid": gid, "chat_id": chat_id, "player_id": player_id, "msg_id": msg_id, "round": 3, "player_hp": cfg["hp"], "rar_hp": cfg["hp"], "player_max_hp": cfg["hp"], "rar_max_hp": cfg["hp"], "magazine": mag, "shot_idx": 0, "player_items": [], "rar_items": [], "player_zerkalo": False, "rar_zerkalo": False, "nasadka_active": False, "pila_active": False, "turn": "player", "log": "", "status": "Подготовка...", "finished": False, "last_action": time.time()}
     roulette_games[gid] = game
     start_phrase = random.choice(ROUND3_START_PHRASES)
     game["log"] = f"– {start_phrase}"
@@ -955,6 +1109,8 @@ async def rl_round3_start(context, gid, chat_id):
     await rl_edit_wait(context, game)
 
 async def rl_rar_turn(context, game):
+    if game.get("_rar_running"): return   # защита от двойного хода Rar
+    game["_rar_running"] = True
     try:
         await _rl_rar_turn_inner(context, game)
     except Exception as e:
@@ -967,6 +1123,8 @@ async def rl_rar_turn(context, game):
             try:
                 await rl_edit(context, game)
             except Exception: pass
+    finally:
+        game["_rar_running"] = False
 
 
 async def _rl_rar_turn_inner(context, game):
@@ -1114,6 +1272,9 @@ async def _rl_rar_turn_inner(context, game):
                         idx = random.randint(0, len(remaining_list) - 1)
                         game["rar_knows"] = remaining_list[idx]
                 await rl_edit(context, game); await asyncio.sleep(0.5)
+
+        if game["rar_hp"] <= 0:
+            await rl_finish(context, game, "player"); return
 
         if "naruch" in game["rar_items"]:
             game["rar_items"].remove("naruch")
@@ -1272,17 +1433,35 @@ async def rl_apply_stolen_item(context, game, item):
 
 async def rl_callback(update, context):
     q = update.callback_query
-    try:
-        await q.answer()
-    except RetryAfter as e:
-        await asyncio.sleep(e.retry_after + 1)
-        try: await q.answer()
-        except Exception: pass
-    except Exception: pass
     data = q.data
     user_id = q.from_user.id
 
-    if data.startswith("rl_noop_"): return
+    async def _answer(text=None, alert=False):
+        # на callback можно ответить только ОДИН раз — поэтому отвечаем ровно один раз
+        try:
+            await q.answer(text, show_alert=alert)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            try: await q.answer(text, show_alert=alert)
+            except Exception: pass
+        except Exception: pass
+
+    _gid = data.split("_")[-1]
+    _game = roulette_games.get(_gid)
+    if data.startswith("rl_noop_"):
+        await _answer(); return
+    if _game is None:
+        if data.startswith("rl_close_"):
+            # игры уже нет в памяти (перезапуск/таймаут) — просто убираем сообщение
+            await _answer()
+            try: await q.message.delete()
+            except Exception: pass
+            return
+        await _answer("Эта игра уже закончилась. Начни новую: «Рар рулетка».", True); return
+    if _game["player_id"] != user_id:
+        await _answer("Это не твоя игра.", True); return
+    await _answer()
+
     if data.startswith("rl_close_"):
         gid = data.split("_")[-1]
         game = roulette_games.get(gid)
@@ -1342,11 +1521,11 @@ async def rl_callback(update, context):
         item = parts[2]; gid = parts[3]
         game = roulette_games.get(gid)
         if not game or game["player_id"] != user_id: return
-        
+
         # Защита от спама
         if game.get("_action_lock"): return
         game["_action_lock"] = True
-        
+
         try:
             if item not in game["rar_items"]: return
             if "adrenalin" not in game["player_items"]: return
@@ -1555,6 +1734,8 @@ async def rl_callback(update, context):
                         reply_markup=InlineKeyboardMarkup(rows))
                 except Exception: pass
                 return
+            if game["player_hp"] <= 0:
+                await rl_finish(context, game, "rar"); return
             await rl_edit(context, game)
         finally:
             game["_action_lock"] = False
@@ -1567,7 +1748,8 @@ async def rl_timeout_loop(app):
         try:
             now = time.time()
             for gid, game in list(roulette_games.items()):
-                if now - game["last_action"] > ROULETTE_TIMEOUT:
+                limit = RL_NEXT_ROUND_TIMEOUT if game.get("awaiting_next") else ROULETTE_TIMEOUT
+                if now - game["last_action"] > limit:
                     try:
                         await app.bot.edit_message_text(
                             chat_id=game["chat_id"], message_id=game["msg_id"],
@@ -1592,7 +1774,9 @@ async def rl_stuck_watchdog(app):
                 if game.get("finished"): continue
                 if game.get("turn") != "rar": continue
                 last = game.get("last_action", 0)
-                if now - last > 60:
+                # если ход Rar реально ещё идёт (например, flood-control), даём ему больше времени
+                if now - last > (180 if game.get("_rar_running") else 60):
+                    game["_rar_running"] = False
                     print(f"[RL WATCHDOG] game {gid} stuck on rar turn, fixing")
                     game["turn"] = "player"
                     game["status"] = "Твой ход"
@@ -1866,14 +2050,24 @@ def get_chat_members(chat_id):
     return [int(uid) for uid in row[0]] if row and row[0] else []
 
 
+_sys_cache = {}
+SYS_CACHE_TTL = 60
+
+
 def get_system_setting(key):
+    now = time.time()
+    hit = _sys_cache.get(key)
+    if hit and now - hit[1] < SYS_CACHE_TTL: return hit[0]
     try:
         conn = get_db_connection(); cursor = conn.cursor()
         cursor.execute("SELECT value FROM system_settings WHERE key = %s", (key,))
         row = cursor.fetchone(); cursor.close(); conn.close()
-        return row[0] if row else None
+        value = row[0] if row else None
+        _sys_cache[key] = (value, now)
+        return value
     except Exception as e:
-        print(f"[SYSTEM_SETTINGS] Error: {e}"); return None
+        print(f"[SYSTEM_SETTINGS] Error: {e}")
+        return hit[0] if hit else None
 
 
 def get_owner_id():
@@ -2157,7 +2351,6 @@ async def playlist_nav_handler(update, context):
     try: await context.bot.send_audio(chat_id=query.message.chat_id, audio=fid, caption=text_msg, reply_markup=kb, parse_mode="HTML")
     except Exception as e: await log_to_owner(context, f"[PL NAV ERROR] {e}")
 
-
 async def handle_message(update, context):
     global rar_replies_history, does_replies_history, recent_tracks_history, ref_replies_history, hi_replies_history
     if not update.message or not update.effective_user: return
@@ -2177,16 +2370,15 @@ async def handle_message(update, context):
         txt_check = (update.message.text or "").strip().lower()
         is_command = txt_check.startswith("рар ") or txt_check.startswith("rar ") or txt_check == "рар" or txt_check == "rar"
         has_photo_only = update.message.photo and not update.message.caption
-        if not is_command and not has_photo_only:
+        if not is_command and not has_photo_only and sleuth_chat_has_any(chat_id):
             try:
                 conn = get_db_connection(); cursor = conn.cursor()
                 cursor.execute("UPDATE sleuths SET current_count = current_count + 1 WHERE chat_id = %s AND target_id = %s", (chat_id, user_id))
                 conn.commit()
                 cursor.execute("SELECT required_count, current_count, target_name, admin_name, target_id, admin_id FROM sleuths WHERE chat_id = %s AND target_id = %s", (chat_id, user_id))
                 row = cursor.fetchone(); cursor.close(); conn.close()
-                if row and row[1] >= row[0]:
+                if row and row[1] >= row[0] and sleuth_delete(chat_id, user_id):
                     req, cur, tname, aname, tid, aid = row
-                    sleuth_delete(chat_id, user_id)
                     t_display = f"@{tname}" if tname else f"ID {tid}"
                     a_display = f"@{aname}" if aname else f"ID {aid}"
                     try:
@@ -2916,12 +3108,23 @@ async def handle_message(update, context):
                 await update.message.reply_text(ADMIN_DIALOGS["empty_list"]); return
             valid = [STATUS_MEMBER, STATUS_ADMINISTRATOR, STATUS_CREATOR, STATUS_RESTRICTED]
             tags, to_remove = [], []
-            for m_id in user_ids:
-                m_id_int = int(m_id)
-                if m_id_int in (int(context.bot.id), GROUP_ANON_BOT_ID): continue
-                try: member = await context.bot.get_chat_member(chat_id, m_id_int)
-                except Exception as e:
-                    err = str(e).lower()
+            sem = asyncio.Semaphore(3)
+
+            async def _check_member(uid):
+                async with sem:
+                    for attempt in range(2):
+                        try:
+                            return uid, await context.bot.get_chat_member(chat_id, uid), ""
+                        except RetryAfter as e:
+                            await asyncio.sleep(e.retry_after + 0.5)
+                        except Exception as e:
+                            return uid, None, str(e).lower()
+                    return uid, None, "flood"
+
+            ids = [int(m) for m in user_ids if int(m) not in (int(context.bot.id), GROUP_ANON_BOT_ID)]
+            results = await asyncio.gather(*(_check_member(i) for i in ids))
+            for m_id_int, member, err in results:
+                if member is None:
                     if "not found" in err or "participant not found" in err: to_remove.append(m_id_int)
                     continue
                 if member.status == STATUS_LEFT: to_remove.append(m_id_int); continue
@@ -3108,7 +3311,6 @@ async def error_handler(update, context):
     if isinstance(context.error, RetryAfter):
         wait = context.error.retry_after
         print(f"[FLOOD CONTROL] Retry after {wait}s")
-        await asyncio.sleep(wait + 1)
         return
     err_text = str(context.error)
     tb = "".join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))[:1500]
@@ -3154,7 +3356,7 @@ def main():
     if not TOKEN or not DATABASE_URL:
         print("Ошибка: Переменные окружения не заданы!"); return
     init_db()
-    app = Application.builder().token(TOKEN).post_init(on_startup).build()
+    app = Application.builder().token(TOKEN).concurrent_updates(True).post_init(on_startup).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
@@ -3169,4 +3371,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()    
