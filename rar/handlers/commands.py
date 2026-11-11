@@ -41,29 +41,88 @@ async def rar_speak_remote(update, context):
             pass
         return
 
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("⚠️ Использование: <code>/say [chat_id] [текст]</code>", parse_mode="HTML")
+    # Проверяем, есть ли медиа в сообщении или в reply
+    media_msg = None
+    if update.message.photo or update.message.video or update.message.document or update.message.audio or update.message.animation:
+        media_msg = update.message
+    elif update.message.reply_to_message:
+        rm = update.message.reply_to_message
+        if rm.photo or rm.video or rm.document or rm.audio or rm.animation:
+            media_msg = rm
+
+    # Разбираем аргументы
+    args = context.args or []
+
+    # Если аргументов нет, но есть медиа с подписью /say — берём оттуда
+    if not args and media_msg is not None:
+        if media_msg.text:
+            args = media_msg.text.split()
+        elif media_msg.caption:
+            cap = media_msg.caption
+            if cap.startswith("/say"):
+                cap = cap[4:].strip()
+            args = cap.split()
+
+    if len(args) < 2:
+        await update.message.reply_text(
+            "⚠️ Использование:\n"
+            "• <code>/say [chat_id] [текст]</code> — обычное сообщение\n"
+            "• Отправь фото/видео с подписью <code>/say [chat_id] [текст]</code>\n"
+            "• Или ответь (Reply) на медиа с <code>/say [chat_id] [текст]</code>",
+            parse_mode="HTML"
+        )
         return
 
     try:
-        target_chat_id = int(context.args[0])
+        target_chat_id = int(args[0])
     except ValueError:
         await update.message.reply_text("⚠️ Ошибка: chat_id должен быть числом.")
         return
 
-    text_to_send = " ".join(context.args[1:])
+    text_to_send = " ".join(args[1:])
 
     try:
-        sent_msg = await context.bot.send_message(
-            chat_id=target_chat_id, 
-            text=text_to_send, 
-            parse_mode="HTML"
-        )
-        # Защита от разрастания памяти
-        if len(_admin_sent_messages) > 500:
-            _admin_sent_messages.clear()
-        # Запоминаем ID отправленного сообщения в быстрой памяти
-        _admin_sent_messages.add((target_chat_id, sent_msg.message_id))
+        sent_msg = None
+
+        if media_msg is not None:
+            if media_msg.photo:
+                file_id = media_msg.photo[-1].file_id
+                sent_msg = await context.bot.send_photo(
+                    chat_id=target_chat_id, photo=file_id,
+                    caption=text_to_send, parse_mode="HTML"
+                )
+            elif media_msg.video:
+                sent_msg = await context.bot.send_video(
+                    chat_id=target_chat_id, video=media_msg.video.file_id,
+                    caption=text_to_send, parse_mode="HTML"
+                )
+            elif media_msg.document:
+                sent_msg = await context.bot.send_document(
+                    chat_id=target_chat_id, document=media_msg.document.file_id,
+                    caption=text_to_send, parse_mode="HTML"
+                )
+            elif media_msg.audio:
+                sent_msg = await context.bot.send_audio(
+                    chat_id=target_chat_id, audio=media_msg.audio.file_id,
+                    caption=text_to_send, parse_mode="HTML"
+                )
+            elif media_msg.animation:
+                sent_msg = await context.bot.send_animation(
+                    chat_id=target_chat_id, animation=media_msg.animation.file_id,
+                    caption=text_to_send, parse_mode="HTML"
+                )
+        else:
+            sent_msg = await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=text_to_send,
+                parse_mode="HTML"
+            )
+
+        if sent_msg:
+            if len(_admin_sent_messages) > 500:
+                _admin_sent_messages.clear()
+            _admin_sent_messages.add((target_chat_id, sent_msg.message_id))
+
         await update.message.reply_text("✨ Успешно отправлено!")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка отправки:\n<code>{html_escape(str(e))}</code>", parse_mode="HTML")
@@ -79,24 +138,25 @@ async def handle_message(update, context):
     save_username(user_id, username)
 
     # Проверка: кто-то отвечает на сообщение, отправленное мной через /say?
-    if update.message.reply_to_message and chat_id < 0:
+    if update.message.reply_to_message:
         replied_msg_id = update.message.reply_to_message.message_id
-        if (chat_id, replied_msg_id) in _admin_sent_messages:
-            owner_id_check = get_owner_id()
+        owner_id_check = get_owner_id()
+        is_owner_dm = (chat_id > 0 and chat_id == owner_id_check)
+        if not is_owner_dm and (chat_id, replied_msg_id) in _admin_sent_messages:
             if owner_id_check:
                 try:
                     replier = update.effective_user
                     replier_name = f"@{replier.username}" if replier.username else replier.first_name
                     text_preview = update.message.text or update.message.caption or "(медиа без текста)"
-                    
+                    chat_label = "Личка" if chat_id > 0 else "Группа/Канал"
                     notify_text = (
                         f"🔔 <b>Ответ на твоё сообщение!</b>\n\n"
+                        f"<b>Тип:</b> {chat_label}\n"
                         f"<b>Чат:</b> <code>{chat_id}</code>\n"
                         f"<b>Кто ответил:</b> {html_escape(replier_name)}\n"
                         f"<b>Текст:</b> {html_escape(text_preview[:500])}"
                     )
                     await context.bot.send_message(chat_id=owner_id_check, text=notify_text, parse_mode="HTML")
-                    # Пересылаем оригинал ответа, чтобы был контекст
                     try:
                         await context.bot.forward_message(
                             chat_id=owner_id_check,
