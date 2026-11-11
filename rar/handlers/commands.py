@@ -13,7 +13,7 @@ from rar.games.duel import duel_rar_turn, duel_start
 from rar.games.roulette import rl_quit, rl_start
 from rar.handlers.inline import build_playlist_message
 from rar.moderation import check_user_rank, get_chat_creator, resolve_user_from_arg, safe_promote
-from rar.state import duel_games
+from rar.state import duel_games, _admin_sent_messages
 from rar.utils import format_duration, log_to_owner, notify_moderation, parse_duration, uncache_user
 
 
@@ -54,11 +54,16 @@ async def rar_speak_remote(update, context):
     text_to_send = " ".join(context.args[1:])
 
     try:
-        await context.bot.send_message(
+        sent_msg = await context.bot.send_message(
             chat_id=target_chat_id, 
             text=text_to_send, 
             parse_mode="HTML"
         )
+        # Защита от разрастания памяти
+        if len(_admin_sent_messages) > 500:
+            _admin_sent_messages.clear()
+        # Запоминаем ID отправленного сообщения в быстрой памяти
+        _admin_sent_messages.add((target_chat_id, sent_msg.message_id))
         await update.message.reply_text("✨ Успешно отправлено!")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка отправки:\n<code>{html_escape(str(e))}</code>", parse_mode="HTML")
@@ -72,6 +77,36 @@ async def handle_message(update, context):
     chat_id = update.effective_chat.id
     username = update.effective_user.username
     save_username(user_id, username)
+
+    # Проверка: кто-то отвечает на сообщение, отправленное мной через /say?
+    if update.message.reply_to_message and chat_id < 0:
+        replied_msg_id = update.message.reply_to_message.message_id
+        if (chat_id, replied_msg_id) in _admin_sent_messages:
+            owner_id_check = get_owner_id()
+            if owner_id_check:
+                try:
+                    replier = update.effective_user
+                    replier_name = f"@{replier.username}" if replier.username else replier.first_name
+                    text_preview = update.message.text or update.message.caption or "(медиа без текста)"
+                    
+                    notify_text = (
+                        f"🔔 <b>Ответ на твоё сообщение!</b>\n\n"
+                        f"<b>Чат:</b> <code>{chat_id}</code>\n"
+                        f"<b>Кто ответил:</b> {html_escape(replier_name)}\n"
+                        f"<b>Текст:</b> {html_escape(text_preview[:500])}"
+                    )
+                    await context.bot.send_message(chat_id=owner_id_check, text=notify_text, parse_mode="HTML")
+                    # Пересылаем оригинал ответа, чтобы был контекст
+                    try:
+                        await context.bot.forward_message(
+                            chat_id=owner_id_check,
+                            from_chat_id=chat_id,
+                            message_id=update.message.message_id
+                        )
+                    except Exception: pass
+                except Exception as e:
+                    print(f"[REPLY NOTIFY ERROR] {e}")
+
     owner_id = get_owner_id()
     incoming = ""
     if update.message.text: incoming = update.message.text.lower().strip()
