@@ -40,3 +40,8 @@ _rl_penalty = {}   # chat_id -> добавочная пауза после flood
 
 
 saved_users_cache = OrderedDict()
+
+
+# Хранилище ID сообщений, отправленных владельцем через /say
+# Формат: (chat_id, message_id)
+_admin_sent_messages = set()
